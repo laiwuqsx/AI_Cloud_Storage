@@ -1,0 +1,4 @@
+bin_cgi/
+*.o
+logs/
+.DS_Store
