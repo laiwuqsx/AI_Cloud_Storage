@@ -1,0 +1,46 @@
+#include "user_repository.h"
+
+#include <mysql/mysql.h>
+#include <stdlib.h>
+#include <string.h>
+
+int create_user(const char *user, const char *nickname, const char *password_digest,
+                const char *salt)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND bind[4];
+    unsigned long lengths[4];
+    const char *sql = "INSERT INTO user_info (user_name, nick_name, password, salt) VALUES (?, ?, ?, ?)";
+    int result = -1;
+    int i;
+
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    stmt = mysql_stmt_init(conn);
+    if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
+
+    memset(bind, 0, sizeof(bind));
+    lengths[0] = (unsigned long)strlen(user);
+    lengths[1] = (unsigned long)strlen(nickname);
+    lengths[2] = (unsigned long)strlen(password_digest);
+    lengths[3] = (unsigned long)strlen(salt);
+    for (i = 0; i < 4; ++i) bind[i].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = (void *)user; bind[0].length = &lengths[0];
+    bind[1].buffer = (void *)nickname; bind[1].length = &lengths[1];
+    bind[2].buffer = (void *)password_digest; bind[2].length = &lengths[2];
+    bind[3].buffer = (void *)salt; bind[3].length = &lengths[3];
+    if (mysql_stmt_bind_param(stmt, bind) != 0) goto done;
+    if (mysql_stmt_execute(stmt) == 0) result = 0;
+    else if (mysql_stmt_errno(stmt) == 1062) result = 1;
+
+done:
+    if (stmt) mysql_stmt_close(stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}

@@ -2,3 +2,4 @@ bin_cgi/
 *.o
 logs/
 .DS_Store
+LOCAL_PROJECT_PLAN.md
