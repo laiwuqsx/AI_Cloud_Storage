@@ -44,3 +44,64 @@ done:
     if (conn) mysql_close(conn);
     return result;
 }
+
+int find_user_credentials(const char *user, UserCredentials *credentials)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND parameter[1];
+    MYSQL_BIND result_bind[2];
+    unsigned long user_length;
+    unsigned long result_lengths[2];
+    my_bool is_null[2];
+    const char *sql = "SELECT password, salt FROM user_info WHERE user_name = ? LIMIT 1";
+    int result = -1;
+
+    if (!user || !credentials) return -1;
+    memset(credentials, 0, sizeof(*credentials));
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    stmt = mysql_stmt_init(conn);
+    if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
+
+    memset(parameter, 0, sizeof(parameter));
+    user_length = (unsigned long)strlen(user);
+    parameter[0].buffer_type = MYSQL_TYPE_STRING;
+    parameter[0].buffer = (void *)user;
+    parameter[0].length = &user_length;
+    if (mysql_stmt_bind_param(stmt, parameter) != 0 || mysql_stmt_execute(stmt) != 0) goto done;
+
+    memset(result_bind, 0, sizeof(result_bind));
+    memset(is_null, 0, sizeof(is_null));
+    result_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    result_bind[0].buffer = credentials->password_digest;
+    result_bind[0].buffer_length = sizeof(credentials->password_digest) - 1;
+    result_bind[0].length = &result_lengths[0];
+    result_bind[0].is_null = &is_null[0];
+    result_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    result_bind[1].buffer = credentials->salt;
+    result_bind[1].buffer_length = sizeof(credentials->salt) - 1;
+    result_bind[1].length = &result_lengths[1];
+    result_bind[1].is_null = &is_null[1];
+    if (mysql_stmt_bind_result(stmt, result_bind) != 0) goto done;
+
+    if (mysql_stmt_fetch(stmt) == MYSQL_NO_DATA) {
+        result = 1;
+        goto done;
+    }
+    if (is_null[0] || is_null[1] ||
+        result_lengths[0] != 32 || result_lengths[1] != 32) goto done;
+    credentials->password_digest[32] = '\0';
+    credentials->salt[32] = '\0';
+    result = 0;
+
+done:
+    if (stmt) mysql_stmt_close(stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}

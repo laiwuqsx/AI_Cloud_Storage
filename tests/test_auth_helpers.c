@@ -19,6 +19,7 @@ int main(void)
     make_password_digest("0123456789abcdef0123456789abcdef",
                          "900150983cd24fb0d6963f7d28e17f72", digest);
     assert(strlen(digest) == 32);
+    assert(strcmp(digest, "6ed96e8403c79174a7098adf240a7353") == 0);
     puts("auth helper tests passed");
     return 0;
 }

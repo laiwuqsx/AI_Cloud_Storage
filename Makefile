@@ -5,13 +5,14 @@ BIN_DIR := bin_cgi
 
 COMMON := common/json_util.c common/http_response.c
 MYSQL_LIBS := -lmysqlclient
+REDIS_LIBS := -lhiredis
 
 .PHONY: all test clean
 
 all: $(BIN_DIR)/login $(BIN_DIR)/register
 
-$(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS)
+$(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
 $(BIN_DIR)/register: src_cgi/reg_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS)

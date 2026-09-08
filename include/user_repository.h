@@ -5,4 +5,12 @@
 int create_user(const char *user, const char *nickname, const char *password_digest,
                 const char *salt);
 
+typedef struct {
+    char password_digest[33];
+    char salt[33];
+} UserCredentials;
+
+/* 0: found, 1: user does not exist, -1: database failure. */
+int find_user_credentials(const char *user, UserCredentials *credentials);
+
 #endif
