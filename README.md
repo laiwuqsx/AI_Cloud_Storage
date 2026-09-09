@@ -30,3 +30,14 @@ make test
 ```
 
 该命令验证最小 JSON 请求解析：`{"user":"alice","password":"secret"}`。
+
+## 本地容器启动
+
+    cd docker
+    cp ../.env.example .env
+    docker compose up --build
+
+启动后，Nginx 在 http://localhost:8080 提供两个路由：
+
+- POST /api/reg：注册。请求体包含 user、nickname 和客户端计算的 MD5 password。
+- POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
