@@ -41,3 +41,11 @@ make test
 
 - POST /api/reg：注册。请求体包含 user、nickname 和客户端计算的 MD5 password。
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
+
+## 认证端到端测试
+
+Docker 守护进程运行后，在项目根目录执行：
+
+    make e2e
+
+测试会启动开发栈，注册唯一测试用户，验证登录 Token 写入 Redis，并验证错误密码被拒绝。
