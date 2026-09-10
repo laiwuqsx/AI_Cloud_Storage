@@ -49,6 +49,15 @@ stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
 
+files_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    http://localhost:8080/api/myfiles)
+case "$files_response" in
+    *'"code":0,"files":[]'*) ;;
+    *) fail "empty file list response: $files_response" ;;
+esac
+
 failed_login_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"password\":\"$wrong_password_md5\"}" \

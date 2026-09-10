@@ -9,13 +9,16 @@ REDIS_LIBS := -lhiredis
 
 .PHONY: all test e2e clean
 
-all: $(BIN_DIR)/login $(BIN_DIR)/register
+all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles
 
 $(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
 $(BIN_DIR)/register: src_cgi/reg_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS)
+
+$(BIN_DIR)/myfiles: src_cgi/myfiles_cgi.c $(COMMON) common/user_validation.c common/token_service.c common/file_repository.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

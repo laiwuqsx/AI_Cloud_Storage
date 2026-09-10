@@ -4,6 +4,7 @@
 #include <hiredis/hiredis.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static int random_hex_token(char *output, size_t output_size)
@@ -44,6 +45,29 @@ int create_session_token(const char *user, char *token, size_t token_size)
     if (!redis || redis->err) goto done;
     reply = redisCommand(redis, "SETEX token:%s %d %s", token, ttl, user);
     if (reply && reply->type == REDIS_REPLY_STATUS) result = 0;
+
+done:
+    if (reply) freeReplyObject(reply);
+    if (redis) redisFree(redis);
+    return result;
+}
+
+int verify_session_token(const char *user, const char *token)
+{
+    struct timeval timeout = {1, 500000};
+    redisContext *redis = NULL;
+    redisReply *reply = NULL;
+    const char *host = getenv("REDIS_HOST");
+    const char *port_text = getenv("REDIS_PORT");
+    int port = port_text ? atoi(port_text) : 6379;
+    int result = -1;
+
+    if (!user || !token || token[0] == '\0') return -1;
+    redis = redisConnectWithTimeout(host ? host : "127.0.0.1", port, timeout);
+    if (!redis || redis->err) goto done;
+    reply = redisCommand(redis, "GET token:%s", token);
+    if (reply && reply->type == REDIS_REPLY_STRING &&
+        strcmp(reply->str, user) == 0) result = 0;
 
 done:
     if (reply) freeReplyObject(reply);

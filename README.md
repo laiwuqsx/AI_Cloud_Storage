@@ -41,6 +41,7 @@ make test
 
 - POST /api/reg：注册。请求体包含 user、nickname 和客户端计算的 MD5 password。
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
+- POST /api/myfiles：携带 user 和 Token，返回当前用户的文件元数据列表。
 
 ## 认证端到端测试
 
