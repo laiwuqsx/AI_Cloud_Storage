@@ -34,6 +34,19 @@ int validate_password_md5(const char *value)
     return 1;
 }
 
+int validate_file_name(const char *value)
+{
+    size_t i;
+    size_t length;
+    if (!value) return 0;
+    length = strlen(value);
+    if (length == 0 || length > 128) return 0;
+    for (i = 0; i < length; ++i) {
+        if ((unsigned char)value[i] < 0x20 || value[i] == '/' || value[i] == '\\') return 0;
+    }
+    return 1;
+}
+
 int create_salt(char output[33])
 {
     static const char hex[] = "0123456789abcdef";

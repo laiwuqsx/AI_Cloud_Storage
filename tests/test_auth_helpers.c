@@ -16,6 +16,8 @@ int main(void)
     assert(!validate_nickname("a"));
     assert(validate_password_md5("900150983cd24fb0d6963f7d28e17f72"));
     assert(!validate_password_md5("not-an-md5"));
+    assert(validate_file_name("project notes.txt"));
+    assert(!validate_file_name("../secret.txt"));
     make_password_digest("0123456789abcdef0123456789abcdef",
                          "900150983cd24fb0d6963f7d28e17f72", digest);
     assert(strlen(digest) == 32);

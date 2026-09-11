@@ -85,3 +85,82 @@ done:
     if (conn) mysql_close(conn);
     return result;
 }
+
+int claim_existing_file(const char *user, const char *md5, const char *file_name)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *check_stmt = NULL;
+    MYSQL_STMT *insert_stmt = NULL;
+    MYSQL_STMT *increment_stmt = NULL;
+    MYSQL_BIND check_bind[1], insert_bind[3], increment_bind[1];
+    unsigned long md5_length, user_length, name_length;
+    const char *check_sql = "SELECT 1 FROM file_info WHERE md5 = ? FOR UPDATE";
+    const char *insert_sql =
+        "INSERT INTO user_file_list (user_name, md5, file_name) VALUES (?, ?, ?)";
+    const char *increment_sql =
+        "UPDATE file_info SET reference_count = reference_count + 1 WHERE md5 = ?";
+    int result = -1;
+
+    if (!user || !md5 || !file_name) return -1;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    check_stmt = mysql_stmt_init(conn);
+    if (!check_stmt || mysql_stmt_prepare(check_stmt, check_sql, (unsigned long)strlen(check_sql)) != 0) goto rollback;
+    memset(check_bind, 0, sizeof(check_bind));
+    md5_length = (unsigned long)strlen(md5);
+    check_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    check_bind[0].buffer = (void *)md5;
+    check_bind[0].length = &md5_length;
+    if (mysql_stmt_bind_param(check_stmt, check_bind) != 0 ||
+        mysql_stmt_execute(check_stmt) != 0 || mysql_stmt_store_result(check_stmt) != 0) goto rollback;
+    if (mysql_stmt_num_rows(check_stmt) == 0) {
+        result = 1;
+        goto rollback;
+    }
+
+    insert_stmt = mysql_stmt_init(conn);
+    if (!insert_stmt || mysql_stmt_prepare(insert_stmt, insert_sql, (unsigned long)strlen(insert_sql)) != 0) goto rollback;
+    memset(insert_bind, 0, sizeof(insert_bind));
+    user_length = (unsigned long)strlen(user);
+    name_length = (unsigned long)strlen(file_name);
+    insert_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    insert_bind[0].buffer = (void *)user; insert_bind[0].length = &user_length;
+    insert_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    insert_bind[1].buffer = (void *)md5; insert_bind[1].length = &md5_length;
+    insert_bind[2].buffer_type = MYSQL_TYPE_STRING;
+    insert_bind[2].buffer = (void *)file_name; insert_bind[2].length = &name_length;
+    if (mysql_stmt_bind_param(insert_stmt, insert_bind) != 0) goto rollback;
+    if (mysql_stmt_execute(insert_stmt) != 0) {
+        if (mysql_stmt_errno(insert_stmt) == 1062) result = 2;
+        goto rollback;
+    }
+
+    increment_stmt = mysql_stmt_init(conn);
+    if (!increment_stmt ||
+        mysql_stmt_prepare(increment_stmt, increment_sql, (unsigned long)strlen(increment_sql)) != 0) goto rollback;
+    memset(increment_bind, 0, sizeof(increment_bind));
+    increment_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    increment_bind[0].buffer = (void *)md5; increment_bind[0].length = &md5_length;
+    if (mysql_stmt_bind_param(increment_stmt, increment_bind) != 0 ||
+        mysql_stmt_execute(increment_stmt) != 0 ||
+        mysql_stmt_affected_rows(increment_stmt) != 1) goto rollback;
+    if (mysql_commit(conn) != 0) goto rollback;
+    result = 0;
+    goto done;
+
+rollback:
+    mysql_rollback(conn);
+done:
+    if (check_stmt) mysql_stmt_close(check_stmt);
+    if (insert_stmt) mysql_stmt_close(insert_stmt);
+    if (increment_stmt) mysql_stmt_close(increment_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}

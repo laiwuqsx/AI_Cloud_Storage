@@ -6,6 +6,7 @@ user_name="e2e_user_$(date +%s)"
 nickname="e2e_nick_$(date +%s)"
 password_md5="5f4dcc3b5aa765d61d8327deb882cf99"
 wrong_password_md5="900150983cd24fb0d6963f7d28e17f72"
+shared_md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 fail() {
     echo "e2e auth test failed: $1" >&2
@@ -49,13 +50,34 @@ stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
 
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO file_info (md5, storage_key, url, size, type) VALUES ('\''aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\'', '\''demo/shared-demo.txt'\'', '\''http://storage.local/shared-demo.txt'\'', 42, '\''txt'\'') ON DUPLICATE KEY UPDATE url = VALUES(url);"'
+
+instant_upload_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\",\"file_name\":\"shared-demo.txt\"}" \
+    http://localhost:8080/api/md5)
+case "$instant_upload_response" in
+    *'"code":0'*) ;;
+    *) fail "instant upload response: $instant_upload_response" ;;
+esac
+
 files_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
     http://localhost:8080/api/myfiles)
 case "$files_response" in
-    *'"code":0,"files":[]'*) ;;
-    *) fail "empty file list response: $files_response" ;;
+    *'"file_name":"shared-demo.txt"'*) ;;
+    *) fail "file list response: $files_response" ;;
+esac
+
+duplicate_upload_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\",\"file_name\":\"shared-demo.txt\"}" \
+    http://localhost:8080/api/md5)
+case "$duplicate_upload_response" in
+    *'"code":5'*) ;;
+    *) fail "duplicate instant upload response: $duplicate_upload_response" ;;
 esac
 
 failed_login_response=$(curl --silent --show-error --request POST \
