@@ -80,6 +80,24 @@ case "$duplicate_upload_response" in
     *) fail "duplicate instant upload response: $duplicate_upload_response" ;;
 esac
 
+delete_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
+    "http://localhost:8080/api/dealfile?cmd=del")
+case "$delete_response" in
+    *'"code":0'*) ;;
+    *) fail "delete response: $delete_response" ;;
+esac
+
+files_after_delete=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    http://localhost:8080/api/myfiles)
+case "$files_after_delete" in
+    *'"code":0,"files":[]'*) ;;
+    *) fail "file list after delete: $files_after_delete" ;;
+esac
+
 failed_login_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"password\":\"$wrong_password_md5\"}" \

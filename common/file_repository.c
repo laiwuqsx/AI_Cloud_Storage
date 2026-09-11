@@ -164,3 +164,65 @@ done:
     if (conn) mysql_close(conn);
     return result;
 }
+
+int remove_user_file(const char *user, const char *md5)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *delete_stmt = NULL;
+    MYSQL_STMT *decrement_stmt = NULL;
+    MYSQL_BIND delete_bind[2], decrement_bind[1];
+    unsigned long user_length, md5_length;
+    const char *delete_sql = "DELETE FROM user_file_list WHERE user_name = ? AND md5 = ?";
+    const char *decrement_sql =
+        "UPDATE file_info SET reference_count = IF(reference_count > 0, reference_count - 1, 0) "
+        "WHERE md5 = ?";
+    int result = -1;
+
+    if (!user || !md5) return -1;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    user_length = (unsigned long)strlen(user);
+    md5_length = (unsigned long)strlen(md5);
+    delete_stmt = mysql_stmt_init(conn);
+    if (!delete_stmt ||
+        mysql_stmt_prepare(delete_stmt, delete_sql, (unsigned long)strlen(delete_sql)) != 0) goto rollback;
+    memset(delete_bind, 0, sizeof(delete_bind));
+    delete_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    delete_bind[0].buffer = (void *)user; delete_bind[0].length = &user_length;
+    delete_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    delete_bind[1].buffer = (void *)md5; delete_bind[1].length = &md5_length;
+    if (mysql_stmt_bind_param(delete_stmt, delete_bind) != 0 ||
+        mysql_stmt_execute(delete_stmt) != 0) goto rollback;
+    if (mysql_stmt_affected_rows(delete_stmt) == 0) {
+        result = 1;
+        goto rollback;
+    }
+
+    decrement_stmt = mysql_stmt_init(conn);
+    if (!decrement_stmt ||
+        mysql_stmt_prepare(decrement_stmt, decrement_sql, (unsigned long)strlen(decrement_sql)) != 0) goto rollback;
+    memset(decrement_bind, 0, sizeof(decrement_bind));
+    decrement_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    decrement_bind[0].buffer = (void *)md5; decrement_bind[0].length = &md5_length;
+    if (mysql_stmt_bind_param(decrement_stmt, decrement_bind) != 0 ||
+        mysql_stmt_execute(decrement_stmt) != 0 ||
+        mysql_stmt_affected_rows(decrement_stmt) != 1) goto rollback;
+    if (mysql_commit(conn) != 0) goto rollback;
+    result = 0;
+    goto done;
+
+rollback:
+    mysql_rollback(conn);
+done:
+    if (delete_stmt) mysql_stmt_close(delete_stmt);
+    if (decrement_stmt) mysql_stmt_close(decrement_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}

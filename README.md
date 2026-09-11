@@ -43,6 +43,7 @@ make test
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
 - POST /api/myfiles：携带 user 和 Token，返回当前用户的文件元数据列表。
 - POST /api/md5：命中已有物理文件时，仅创建用户文件关联，实现秒传。
+- POST /api/dealfile?cmd=del：携带 user、Token、md5，删除当前用户的文件关联。
 
 ## 认证端到端测试
 
