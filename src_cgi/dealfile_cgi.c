@@ -31,6 +31,8 @@ static int get_command(const char *query)
             (cursor[7] == '\0' || cursor[7] == '&')) return 1;
         if (strncmp(cursor, "cmd=share", 9) == 0 &&
             (cursor[9] == '\0' || cursor[9] == '&')) return 2;
+        if (strncmp(cursor, "cmd=unshare", 11) == 0 &&
+            (cursor[11] == '\0' || cursor[11] == '&')) return 3;
         cursor = strchr(cursor, '&');
         if (!cursor) break;
         ++cursor;
@@ -70,7 +72,7 @@ int main(void)
             } else {
                 write_json_response(1, "database error", NULL);
             }
-        } else {
+        } else if (command == 2) {
             result = share_user_file(user, md5);
             if (result == 0) {
                 write_json_response(0, "file marked as shared", NULL);
@@ -78,6 +80,15 @@ int main(void)
                 write_json_response(1, "file not found in user list", NULL);
             } else if (result == 2) {
                 write_json_response(5, "file already shared", NULL);
+            } else {
+                write_json_response(1, "database error", NULL);
+            }
+        } else {
+            result = unshare_user_file(user, md5);
+            if (result == 0) {
+                write_json_response(0, "file sharing cancelled", NULL);
+            } else if (result == 1) {
+                write_json_response(1, "file is not shared by this user", NULL);
             } else {
                 write_json_response(1, "database error", NULL);
             }

@@ -311,6 +311,68 @@ done:
     return result;
 }
 
+int unshare_user_file(const char *user, const char *md5)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *unshare_stmt = NULL;
+    MYSQL_STMT *status_stmt = NULL;
+    MYSQL_BIND unshare_bind[2], status_bind[2];
+    unsigned long user_length, md5_length;
+    const char *unshare_sql = "DELETE FROM share_file_list WHERE user_name = ? AND md5 = ?";
+    const char *status_sql = "UPDATE user_file_list SET shared_status = 0 WHERE user_name = ? AND md5 = ?";
+    int result = -1;
+
+    if (!user || !md5) return -1;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    user_length = (unsigned long)strlen(user);
+    md5_length = (unsigned long)strlen(md5);
+    unshare_stmt = mysql_stmt_init(conn);
+    if (!unshare_stmt ||
+        mysql_stmt_prepare(unshare_stmt, unshare_sql, (unsigned long)strlen(unshare_sql)) != 0) goto rollback_unshare;
+    memset(unshare_bind, 0, sizeof(unshare_bind));
+    unshare_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    unshare_bind[0].buffer = (void *)user; unshare_bind[0].length = &user_length;
+    unshare_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    unshare_bind[1].buffer = (void *)md5; unshare_bind[1].length = &md5_length;
+    if (mysql_stmt_bind_param(unshare_stmt, unshare_bind) != 0 ||
+        mysql_stmt_execute(unshare_stmt) != 0) goto rollback_unshare;
+    if (mysql_stmt_affected_rows(unshare_stmt) == 0) {
+        result = 1;
+        goto rollback_unshare;
+    }
+
+    status_stmt = mysql_stmt_init(conn);
+    if (!status_stmt ||
+        mysql_stmt_prepare(status_stmt, status_sql, (unsigned long)strlen(status_sql)) != 0) goto rollback_unshare;
+    memset(status_bind, 0, sizeof(status_bind));
+    status_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    status_bind[0].buffer = (void *)user; status_bind[0].length = &user_length;
+    status_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    status_bind[1].buffer = (void *)md5; status_bind[1].length = &md5_length;
+    if (mysql_stmt_bind_param(status_stmt, status_bind) != 0 ||
+        mysql_stmt_execute(status_stmt) != 0 ||
+        mysql_stmt_affected_rows(status_stmt) != 1) goto rollback_unshare;
+    if (mysql_commit(conn) != 0) goto rollback_unshare;
+    result = 0;
+    goto done;
+
+rollback_unshare:
+    mysql_rollback(conn);
+done:
+    if (unshare_stmt) mysql_stmt_close(unshare_stmt);
+    if (status_stmt) mysql_stmt_close(status_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
 int list_shared_files(SharedFile *files, size_t capacity, size_t *count)
 {
     MYSQL *conn = NULL;

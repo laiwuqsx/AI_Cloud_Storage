@@ -36,4 +36,7 @@ int remove_user_file(const char *user, const char *md5);
 /* 0: shared, 1: user-file relationship does not exist, 2: already shared, -1: database failure. */
 int share_user_file(const char *user, const char *md5);
 
+/* 0: sharing cancelled, 1: file is not shared by this user, -1: database failure. */
+int unshare_user_file(const char *user, const char *md5);
+
 #endif
