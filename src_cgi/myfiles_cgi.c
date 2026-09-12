@@ -48,6 +48,7 @@ static void write_files(const UserFile *files, size_t count)
         fputs(",\"file_name\":", stdout); write_json_string(files[index].file_name);
         fputs(",\"url\":", stdout); write_json_string(files[index].url);
         printf(",\"size\":%llu", files[index].size);
+        printf(",\"shared_status\":%u", files[index].shared_status);
         fputs(",\"type\":", stdout); write_json_string(files[index].type);
         fputs(",\"create_time\":", stdout); write_json_string(files[index].create_time);
         putchar('}');

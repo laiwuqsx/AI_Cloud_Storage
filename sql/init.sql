@@ -37,3 +37,16 @@ CREATE TABLE IF NOT EXISTS user_file_list (
   CONSTRAINT fk_user_file_info FOREIGN KEY (md5)
     REFERENCES file_info(md5) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS share_file_list (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_name VARCHAR(32) NOT NULL,
+  md5 CHAR(32) NOT NULL,
+  file_name VARCHAR(128) NOT NULL,
+  pv INT UNSIGNED NOT NULL DEFAULT 0,
+  create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_shared_user_file (user_name, md5),
+  KEY idx_share_created_at (create_time),
+  CONSTRAINT fk_share_file_info FOREIGN KEY (md5)
+    REFERENCES file_info(md5) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -22,13 +22,15 @@ static int read_body(char *body, size_t size)
     return 0;
 }
 
-static int is_delete_command(const char *query)
+static int get_command(const char *query)
 {
     const char *cursor = query;
     if (!cursor) return 0;
     while (*cursor) {
         if (strncmp(cursor, "cmd=del", 7) == 0 &&
             (cursor[7] == '\0' || cursor[7] == '&')) return 1;
+        if (strncmp(cursor, "cmd=share", 9) == 0 &&
+            (cursor[9] == '\0' || cursor[9] == '&')) return 2;
         cursor = strchr(cursor, '&');
         if (!cursor) break;
         ++cursor;
@@ -39,10 +41,11 @@ static int is_delete_command(const char *query)
 int main(void)
 {
     char body[MAX_BODY_SIZE], user[33], token[65], md5[33];
-    int result;
+    int result, command;
 
     while (FCGI_Accept() >= 0) {
-        if (!is_delete_command(getenv("QUERY_STRING"))) {
+        command = get_command(getenv("QUERY_STRING"));
+        if (command == 0) {
             write_json_response(1, "unknown file command", NULL);
             continue;
         }
@@ -51,20 +54,33 @@ int main(void)
             json_get_string(body, "token", token, sizeof(token)) != 0 ||
             json_get_string(body, "md5", md5, sizeof(md5)) != 0 ||
             !validate_username(user) || !validate_password_md5(md5)) {
-            write_json_response(1, "invalid delete request", NULL);
+            write_json_response(1, "invalid file command request", NULL);
             continue;
         }
         if (verify_session_token(user, token) != 0) {
             write_json_response(4, "token error", NULL);
             continue;
         }
-        result = remove_user_file(user, md5);
-        if (result == 0) {
-            write_json_response(0, "file removed from user list", NULL);
-        } else if (result == 1) {
-            write_json_response(1, "file not found in user list", NULL);
+        if (command == 1) {
+            result = remove_user_file(user, md5);
+            if (result == 0) {
+                write_json_response(0, "file removed from user list", NULL);
+            } else if (result == 1) {
+                write_json_response(1, "file not found in user list", NULL);
+            } else {
+                write_json_response(1, "database error", NULL);
+            }
         } else {
-            write_json_response(1, "database error", NULL);
+            result = share_user_file(user, md5);
+            if (result == 0) {
+                write_json_response(0, "file marked as shared", NULL);
+            } else if (result == 1) {
+                write_json_response(1, "file not found in user list", NULL);
+            } else if (result == 2) {
+                write_json_response(5, "file already shared", NULL);
+            } else {
+                write_json_response(1, "database error", NULL);
+            }
         }
     }
     return 0;

@@ -62,13 +62,31 @@ case "$instant_upload_response" in
     *) fail "instant upload response: $instant_upload_response" ;;
 esac
 
+share_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
+    "http://localhost:8080/api/dealfile?cmd=share")
+case "$share_response" in
+    *'"code":0'*) ;;
+    *) fail "share response: $share_response" ;;
+esac
+
 files_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
     http://localhost:8080/api/myfiles)
 case "$files_response" in
-    *'"file_name":"shared-demo.txt"'*) ;;
+    *'"file_name":"shared-demo.txt","url":'*'"shared_status":1'*) ;;
     *) fail "file list response: $files_response" ;;
+esac
+
+duplicate_share_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
+    "http://localhost:8080/api/dealfile?cmd=share")
+case "$duplicate_share_response" in
+    *'"code":5'*) ;;
+    *) fail "duplicate share response: $duplicate_share_response" ;;
 esac
 
 duplicate_upload_response=$(curl --silent --show-error --request POST \
