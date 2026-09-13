@@ -7,6 +7,7 @@ nickname="e2e_nick_$(date +%s)"
 password_md5="5f4dcc3b5aa765d61d8327deb882cf99"
 wrong_password_md5="900150983cd24fb0d6963f7d28e17f72"
 shared_md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+missing_md5="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 fail() {
     echo "e2e auth test failed: $1" >&2
@@ -49,6 +50,24 @@ token=$(printf "%s" "$login_response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
+
+missing_file_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$missing_md5\",\"file_name\":\"missing-demo.txt\"}" \
+    http://localhost:8080/api/md5)
+case "$missing_file_response" in
+    *'"code":1'*'"msg":"physical file not found"'*) ;;
+    *) fail "missing physical file response: $missing_file_response" ;;
+esac
+
+invalid_md5_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"not-an-md5\",\"file_name\":\"invalid-demo.txt\"}" \
+    http://localhost:8080/api/md5)
+case "$invalid_md5_response" in
+    *'"code":3'*'"msg":"invalid instant upload request"'*) ;;
+    *) fail "invalid instant upload request response: $invalid_md5_response" ;;
+esac
 
 docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO file_info (md5, storage_key, url, size, type) VALUES ('\''aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\'', '\''demo/shared-demo.txt'\'', '\''http://storage.local/shared-demo.txt'\'', 42, '\''txt'\'') ON DUPLICATE KEY UPDATE url = VALUES(url);"'

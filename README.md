@@ -42,7 +42,7 @@ make test
 - POST /api/reg：注册。请求体包含 user、nickname 和客户端计算的 MD5 password。
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
 - POST /api/myfiles：携带 user 和 Token，返回当前用户的文件元数据列表。
-- POST /api/md5：命中已有物理文件时，仅创建用户文件关联，实现秒传。
+- POST /api/md5：命中已有物理文件时，仅创建用户文件关联，实现秒传。`code=1` 表示确认未命中、前端可以继续普通上传；`code=3` 表示请求错误；`code=4` 表示 Token 无效；`code=5` 表示用户已经拥有；`code=6` 表示数据库故障，前端不得继续上传。
 - POST /api/dealfile?cmd=del：携带 user、Token、md5，删除当前用户的文件关联。
 - POST /api/dealfile?cmd=share：携带 user、Token、md5，将当前用户的文件标记为分享。
 - POST /api/dealfile?cmd=unshare：携带 user、Token、md5，取消当前用户的分享状态。

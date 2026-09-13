@@ -24,11 +24,17 @@ typedef struct {
     unsigned long pv;
 } SharedFile;
 
+typedef enum {
+    CLAIM_FILE_DATABASE_FAILURE = -1,
+    CLAIM_FILE_LINKED = 0,
+    CLAIM_FILE_PHYSICAL_MISSING = 1,
+    CLAIM_FILE_ALREADY_OWNED = 2
+} ClaimFileResult;
+
 /* 0: success, -1: database failure. */
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count);
 
-/* 0: linked, 1: physical file missing, 2: user already owns the file, -1: database failure. */
-int claim_existing_file(const char *user, const char *md5, const char *file_name);
+ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name);
 
 /* 0: removed, 1: user-file relationship does not exist, -1: database failure. */
 int remove_user_file(const char *user, const char *md5);

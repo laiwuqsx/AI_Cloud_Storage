@@ -90,7 +90,7 @@ done:
     return result;
 }
 
-int claim_existing_file(const char *user, const char *md5, const char *file_name)
+ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name)
 {
     MYSQL *conn = NULL;
     MYSQL_STMT *check_stmt = NULL;
@@ -103,9 +103,9 @@ int claim_existing_file(const char *user, const char *md5, const char *file_name
         "INSERT INTO user_file_list (user_name, md5, file_name) VALUES (?, ?, ?)";
     const char *increment_sql =
         "UPDATE file_info SET reference_count = reference_count + 1 WHERE md5 = ?";
-    int result = -1;
+    ClaimFileResult result = CLAIM_FILE_DATABASE_FAILURE;
 
-    if (!user || !md5 || !file_name) return -1;
+    if (!user || !md5 || !file_name) return CLAIM_FILE_DATABASE_FAILURE;
     conn = mysql_init(NULL);
     if (!conn) goto done;
     if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
@@ -125,7 +125,7 @@ int claim_existing_file(const char *user, const char *md5, const char *file_name
     if (mysql_stmt_bind_param(check_stmt, check_bind) != 0 ||
         mysql_stmt_execute(check_stmt) != 0 || mysql_stmt_store_result(check_stmt) != 0) goto rollback;
     if (mysql_stmt_num_rows(check_stmt) == 0) {
-        result = 1;
+        result = CLAIM_FILE_PHYSICAL_MISSING;
         goto rollback;
     }
 
@@ -142,7 +142,7 @@ int claim_existing_file(const char *user, const char *md5, const char *file_name
     insert_bind[2].buffer = (void *)file_name; insert_bind[2].length = &name_length;
     if (mysql_stmt_bind_param(insert_stmt, insert_bind) != 0) goto rollback;
     if (mysql_stmt_execute(insert_stmt) != 0) {
-        if (mysql_stmt_errno(insert_stmt) == 1062) result = 2;
+        if (mysql_stmt_errno(insert_stmt) == 1062) result = CLAIM_FILE_ALREADY_OWNED;
         goto rollback;
     }
 
@@ -156,7 +156,7 @@ int claim_existing_file(const char *user, const char *md5, const char *file_name
         mysql_stmt_execute(increment_stmt) != 0 ||
         mysql_stmt_affected_rows(increment_stmt) != 1) goto rollback;
     if (mysql_commit(conn) != 0) goto rollback;
-    result = 0;
+    result = CLAIM_FILE_LINKED;
     goto done;
 
 rollback:
