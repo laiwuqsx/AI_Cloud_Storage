@@ -31,8 +31,29 @@ typedef enum {
     CLAIM_FILE_ALREADY_OWNED = 2
 } ClaimFileResult;
 
+typedef struct {
+    const char *user_name;
+    const char *md5;
+    const char *file_name;
+    const char *storage_key;
+    const char *url;
+    const char *type;
+    unsigned long long size;
+} NewFileRecord;
+
+typedef enum {
+    RECORD_NEW_FILE_INVALID_ARGUMENT = -3,
+    RECORD_NEW_FILE_COMMIT_UNKNOWN = -2,
+    RECORD_NEW_FILE_DATABASE_FAILURE = -1,
+    RECORD_NEW_FILE_CREATED = 0,
+    RECORD_NEW_FILE_PHYSICAL_CONFLICT = 1
+} RecordNewFileResult;
+
 /* 0: success, -1: database failure. */
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count);
+
+/* Atomically creates file_info(reference_count=1) and the uploader's user_file_list row. */
+RecordNewFileResult record_new_file_upload(const NewFileRecord *record);
 
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name);
 

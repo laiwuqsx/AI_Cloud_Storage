@@ -90,6 +90,104 @@ done:
     return result;
 }
 
+static int valid_new_file_record(const NewFileRecord *record)
+{
+    if (!record || !record->user_name || !record->md5 || !record->file_name ||
+        !record->storage_key || !record->url || !record->type) return 0;
+    return strlen(record->user_name) > 0 && strlen(record->user_name) <= 32 &&
+           strlen(record->md5) == 32 &&
+           strlen(record->file_name) > 0 && strlen(record->file_name) <= 128 &&
+           strlen(record->storage_key) > 0 && strlen(record->storage_key) <= 256 &&
+           strlen(record->url) > 0 && strlen(record->url) <= 512 &&
+           strlen(record->type) <= 32;
+}
+
+RecordNewFileResult record_new_file_upload(const NewFileRecord *record)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *file_stmt = NULL;
+    MYSQL_STMT *user_file_stmt = NULL;
+    MYSQL_BIND file_bind[5], user_file_bind[3];
+    unsigned long md5_length, storage_key_length, url_length, type_length;
+    unsigned long user_length, file_name_length;
+    my_ulonglong file_size;
+    const char *file_sql =
+        "INSERT INTO file_info "
+        "(md5, storage_key, url, size, type, reference_count) VALUES (?, ?, ?, ?, ?, 1)";
+    const char *user_file_sql =
+        "INSERT INTO user_file_list (user_name, md5, file_name) VALUES (?, ?, ?)";
+    RecordNewFileResult result = RECORD_NEW_FILE_DATABASE_FAILURE;
+
+    if (!valid_new_file_record(record)) return RECORD_NEW_FILE_INVALID_ARGUMENT;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    md5_length = (unsigned long)strlen(record->md5);
+    storage_key_length = (unsigned long)strlen(record->storage_key);
+    url_length = (unsigned long)strlen(record->url);
+    type_length = (unsigned long)strlen(record->type);
+    file_size = (my_ulonglong)record->size;
+
+    file_stmt = mysql_stmt_init(conn);
+    if (!file_stmt ||
+        mysql_stmt_prepare(file_stmt, file_sql, (unsigned long)strlen(file_sql)) != 0) goto rollback;
+    memset(file_bind, 0, sizeof(file_bind));
+    file_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    file_bind[0].buffer = (void *)record->md5; file_bind[0].length = &md5_length;
+    file_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    file_bind[1].buffer = (void *)record->storage_key; file_bind[1].length = &storage_key_length;
+    file_bind[2].buffer_type = MYSQL_TYPE_STRING;
+    file_bind[2].buffer = (void *)record->url; file_bind[2].length = &url_length;
+    file_bind[3].buffer_type = MYSQL_TYPE_LONGLONG;
+    file_bind[3].buffer = &file_size; file_bind[3].is_unsigned = 1;
+    file_bind[4].buffer_type = MYSQL_TYPE_STRING;
+    file_bind[4].buffer = (void *)record->type; file_bind[4].length = &type_length;
+    if (mysql_stmt_bind_param(file_stmt, file_bind) != 0) goto rollback;
+    if (mysql_stmt_execute(file_stmt) != 0) {
+        if (mysql_stmt_errno(file_stmt) == 1062) result = RECORD_NEW_FILE_PHYSICAL_CONFLICT;
+        goto rollback;
+    }
+    if (mysql_stmt_affected_rows(file_stmt) != 1) goto rollback;
+
+    user_length = (unsigned long)strlen(record->user_name);
+    file_name_length = (unsigned long)strlen(record->file_name);
+    user_file_stmt = mysql_stmt_init(conn);
+    if (!user_file_stmt ||
+        mysql_stmt_prepare(user_file_stmt, user_file_sql,
+                           (unsigned long)strlen(user_file_sql)) != 0) goto rollback;
+    memset(user_file_bind, 0, sizeof(user_file_bind));
+    user_file_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    user_file_bind[0].buffer = (void *)record->user_name; user_file_bind[0].length = &user_length;
+    user_file_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    user_file_bind[1].buffer = (void *)record->md5; user_file_bind[1].length = &md5_length;
+    user_file_bind[2].buffer_type = MYSQL_TYPE_STRING;
+    user_file_bind[2].buffer = (void *)record->file_name; user_file_bind[2].length = &file_name_length;
+    if (mysql_stmt_bind_param(user_file_stmt, user_file_bind) != 0 ||
+        mysql_stmt_execute(user_file_stmt) != 0 ||
+        mysql_stmt_affected_rows(user_file_stmt) != 1) goto rollback;
+
+    if (mysql_commit(conn) != 0) {
+        result = RECORD_NEW_FILE_COMMIT_UNKNOWN;
+        goto done;
+    }
+    result = RECORD_NEW_FILE_CREATED;
+    goto done;
+
+rollback:
+    mysql_rollback(conn);
+done:
+    if (file_stmt) mysql_stmt_close(file_stmt);
+    if (user_file_stmt) mysql_stmt_close(user_file_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name)
 {
     MYSQL *conn = NULL;

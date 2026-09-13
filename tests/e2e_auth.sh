@@ -8,6 +8,7 @@ password_md5="5f4dcc3b5aa765d61d8327deb882cf99"
 wrong_password_md5="900150983cd24fb0d6963f7d28e17f72"
 shared_md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 missing_md5="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+transaction_md5=$(printf "%032d" "$(date +%s)")
 
 fail() {
     echo "e2e auth test failed: $1" >&2
@@ -50,6 +51,10 @@ token=$(printf "%s" "$login_response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/upload_repository_probe "$user_name" "$transaction_md5" || \
+    fail "first-upload database transaction probe"
 
 missing_file_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \

@@ -16,12 +16,13 @@ COPY Makefile ./
 COPY common ./common
 COPY include ./include
 COPY src_cgi ./src_cgi
+COPY tests ./tests
 
-RUN make all && mkdir -p /app/logs
+RUN make all integration-tools && mkdir -p /app/logs
 
 COPY docker/fastcgi_app/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-EXPOSE 10000 10001
+EXPOSE 10000 10001 10002 10003 10004 10005
 
 CMD ["/app/start.sh"]

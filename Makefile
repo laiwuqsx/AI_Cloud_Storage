@@ -7,7 +7,7 @@ COMMON := common/json_util.c common/http_response.c
 MYSQL_LIBS := -lmysqlclient
 REDIS_LIBS := -lhiredis
 
-.PHONY: all test e2e clean
+.PHONY: all integration-tools test e2e clean
 
 all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile $(BIN_DIR)/logout
 
@@ -28,6 +28,11 @@ $(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/user_validation.c c
 
 $(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(REDIS_LIBS)
+
+integration-tools: $(BIN_DIR)/upload_repository_probe
+
+$(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c common/file_repository.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
