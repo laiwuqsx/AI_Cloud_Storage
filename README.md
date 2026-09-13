@@ -14,6 +14,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交，MD5 唯一约束用于识别并发首传冲突。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
+上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。当前已用假存储覆盖这些分支，FastDFS 适配器尚未接入。
+
 ## 目录
 
 ```text

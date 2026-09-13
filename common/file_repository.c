@@ -188,6 +188,48 @@ done:
     return result;
 }
 
+int confirm_new_file_upload(const char *user_name, const char *md5, const char *storage_key)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND bind[3];
+    unsigned long user_length, md5_length, storage_key_length;
+    const char *sql =
+        "SELECT 1 FROM file_info f JOIN user_file_list u ON u.md5 = f.md5 "
+        "WHERE u.user_name = ? AND f.md5 = ? AND f.storage_key = ? LIMIT 1";
+    int result = -1;
+
+    if (!user_name || !md5 || !storage_key) return -1;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
+                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
+                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
+                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+                            3306, NULL, 0)) goto done;
+
+    user_length = (unsigned long)strlen(user_name);
+    md5_length = (unsigned long)strlen(md5);
+    storage_key_length = (unsigned long)strlen(storage_key);
+    stmt = mysql_stmt_init(conn);
+    if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
+    memset(bind, 0, sizeof(bind));
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = (void *)user_name; bind[0].length = &user_length;
+    bind[1].buffer_type = MYSQL_TYPE_STRING;
+    bind[1].buffer = (void *)md5; bind[1].length = &md5_length;
+    bind[2].buffer_type = MYSQL_TYPE_STRING;
+    bind[2].buffer = (void *)storage_key; bind[2].length = &storage_key_length;
+    if (mysql_stmt_bind_param(stmt, bind) != 0 || mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_store_result(stmt) != 0) goto done;
+    result = mysql_stmt_num_rows(stmt) == 1 ? 1 : 0;
+
+done:
+    if (stmt) mysql_stmt_close(stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name)
 {
     MYSQL *conn = NULL;

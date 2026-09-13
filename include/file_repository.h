@@ -55,6 +55,9 @@ int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *
 /* Atomically creates file_info(reference_count=1) and the uploader's user_file_list row. */
 RecordNewFileResult record_new_file_upload(const NewFileRecord *record);
 
+/* 1: exact committed file and owner rows exist, 0: absent, -1: database failure. */
+int confirm_new_file_upload(const char *user_name, const char *md5, const char *storage_key);
+
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name);
 
 /* 0: removed, 1: user-file relationship does not exist, -1: database failure. */
