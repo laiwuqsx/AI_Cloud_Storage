@@ -4,13 +4,13 @@
 
 ## 当前阶段
 
-第一阶段只建立与原项目一致的基础骨架，并完成最小登录请求闭环：
+当前已完成认证和文件元数据管理的基础闭环：
 
 ```text
-Nginx /api/login -> FastCGI login -> JSON response
+Nginx -> C FastCGI -> MySQL / Redis
 ```
 
-后续将按原项目的模块逐步实现注册、文件上传、MD5 秒传、分片上传、MySQL、Redis、FastDFS 和 FAISS 检索。
+已实现注册、登录、退出登录、用户文件列表、MD5 秒传、逻辑删除以及分享状态管理。FastDFS 普通上传、分片上传、受控分享链接、前端和 FAISS 检索仍在后续阶段。
 
 ## 目录
 
@@ -29,7 +29,7 @@ docker/     容器化部署文件
 make test
 ```
 
-该命令验证最小 JSON 请求解析：`{"user":"alice","password":"secret"}`。
+该命令验证 JSON 请求解析、MD5 实现、用户输入校验和密码摘要辅助逻辑。
 
 ## 本地容器启动
 
@@ -37,7 +37,7 @@ make test
     cp ../.env.example .env
     docker compose up --build
 
-启动后，Nginx 在 http://localhost:8080 提供两个路由：
+启动后，Nginx 在 http://localhost:8080 提供以下路由：
 
 - POST /api/reg：注册。请求体包含 user、nickname 和客户端计算的 MD5 password。
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
@@ -45,6 +45,8 @@ make test
 - POST /api/md5：命中已有物理文件时，仅创建用户文件关联，实现秒传。
 - POST /api/dealfile?cmd=del：携带 user、Token、md5，删除当前用户的文件关联。
 - POST /api/dealfile?cmd=share：携带 user、Token、md5，将当前用户的文件标记为分享。
+- POST /api/dealfile?cmd=unshare：携带 user、Token、md5，取消当前用户的分享状态。
+- POST /api/logout：携带 user 和当前 Token，删除该 Redis 会话；重复请求仍返回成功。
 
 ## 认证端到端测试
 
@@ -52,4 +54,4 @@ Docker 守护进程运行后，在项目根目录执行：
 
     make e2e
 
-测试会启动开发栈，注册唯一测试用户，验证登录 Token 写入 Redis，并验证错误密码被拒绝。
+测试会启动开发栈，覆盖注册、登录、Redis Token、秒传、文件列表、分享、取消分享、删除和退出登录。退出后会检查 Redis key 已删除、旧 Token 被拒绝，并验证重复退出可安全重试。

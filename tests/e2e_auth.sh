@@ -143,6 +143,37 @@ case "$files_after_delete" in
     *) fail "file list after delete: $files_after_delete" ;;
 esac
 
+logout_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    http://localhost:8080/api/logout)
+case "$logout_response" in
+    *'"code":0'*) ;;
+    *) fail "logout response: $logout_response" ;;
+esac
+
+stored_user_after_logout=$(docker compose -f "$compose_file" exec -T redis \
+    redis-cli --raw GET "token:$token")
+[ -z "$stored_user_after_logout" ] || fail "Redis session still exists after logout"
+
+files_after_logout=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    http://localhost:8080/api/myfiles)
+case "$files_after_logout" in
+    *'"code":4'*) ;;
+    *) fail "old token accepted after logout: $files_after_logout" ;;
+esac
+
+duplicate_logout_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    http://localhost:8080/api/logout)
+case "$duplicate_logout_response" in
+    *'"code":0'*) ;;
+    *) fail "duplicate logout response: $duplicate_logout_response" ;;
+esac
+
 failed_login_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"password\":\"$wrong_password_md5\"}" \

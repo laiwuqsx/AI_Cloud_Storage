@@ -9,7 +9,7 @@ REDIS_LIBS := -lhiredis
 
 .PHONY: all test e2e clean
 
-all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile
+all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile $(BIN_DIR)/logout
 
 $(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
@@ -25,6 +25,9 @@ $(BIN_DIR)/md5: src_cgi/md5_cgi.c $(COMMON) common/user_validation.c common/toke
 
 $(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/user_validation.c common/token_service.c common/file_repository.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
+
+$(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/user_validation.c common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(REDIS_LIBS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

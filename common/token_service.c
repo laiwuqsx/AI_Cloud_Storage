@@ -74,3 +74,42 @@ done:
     if (redis) redisFree(redis);
     return result;
 }
+
+int revoke_session_token(const char *user, const char *token)
+{
+    static const char script[] =
+        "local owner = redis.call('GET', KEYS[1]); "
+        "if not owner then return 0; end; "
+        "if owner ~= ARGV[1] then return -1; end; "
+        "return redis.call('DEL', KEYS[1]);";
+    struct timeval timeout = {1, 500000};
+    redisContext *redis = NULL;
+    redisReply *reply = NULL;
+    const char *host = getenv("REDIS_HOST");
+    const char *port_text = getenv("REDIS_PORT");
+    const char *arguments[5];
+    char key[72];
+    int port = port_text ? atoi(port_text) : 6379;
+    int result = -1;
+
+    if (!user || !token || token[0] == '\0' ||
+        snprintf(key, sizeof(key), "token:%s", token) >= (int)sizeof(key)) return -1;
+    redis = redisConnectWithTimeout(host ? host : "127.0.0.1", port, timeout);
+    if (!redis || redis->err) goto done;
+
+    arguments[0] = "EVAL";
+    arguments[1] = script;
+    arguments[2] = "1";
+    arguments[3] = key;
+    arguments[4] = user;
+    reply = redisCommandArgv(redis, 5, arguments, NULL);
+    if (reply && reply->type == REDIS_REPLY_INTEGER) {
+        if (reply->integer == 0 || reply->integer == 1) result = 0;
+        else if (reply->integer == -1) result = 1;
+    }
+
+done:
+    if (reply) freeReplyObject(reply);
+    if (redis) redisFree(redis);
+    return result;
+}
