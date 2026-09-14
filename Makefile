@@ -44,9 +44,11 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_auth_tests
 	$(CC) $(CFLAGS) tests/test_upload_service.c common/storage_client.c common/upload_service.c -o /tmp/ai_cloud_storage_upload_tests
 	/tmp/ai_cloud_storage_upload_tests
+	$(CC) $(CFLAGS) tests/test_fastdfs_storage_client.c common/storage_client.c common/fastdfs_storage_client.c -o /tmp/ai_cloud_storage_fastdfs_tests
+	/tmp/ai_cloud_storage_fastdfs_tests
 
 e2e:
 	sh tests/e2e_auth.sh
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests

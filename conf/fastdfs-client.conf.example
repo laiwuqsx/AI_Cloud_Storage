@@ -1,0 +1,10 @@
+connect_timeout=5
+network_timeout=30
+base_path=/tmp/fastdfs-client
+tracker_server=fastdfs:22122
+log_level=info
+use_connection_pool=false
+connection_pool_max_idle_time=3600
+load_fdfs_parameters_from_tracker=false
+use_storage_id=false
+http.tracker_server_port=80

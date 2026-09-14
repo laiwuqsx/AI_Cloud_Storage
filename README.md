@@ -16,6 +16,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。当前已用假存储覆盖这些分支，FastDFS 适配器尚未接入。
 
+FastDFS 的 `StorageClient` 适配器已实现：它使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。配置示例位于 `conf/fastdfs-client.conf.example`；当前 Docker 开发栈尚未安装 FastDFS CLI 或启动 tracker/storage，所以适配器还没有接入公开上传接口。
+
 ## 目录
 
 ```text
