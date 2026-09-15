@@ -18,6 +18,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 FastDFS 的 `StorageClient` 适配器已实现：它使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。配置示例位于 `conf/fastdfs-client.conf.example`；当前 Docker 开发栈尚未安装 FastDFS CLI 或启动 tracker/storage，所以适配器还没有接入公开上传接口。
 
+文件接收层使用 `mkstemp` 创建权限受限的随机临时文件，并在分块写入时增量计算服务端 MD5、累计真实字节数和执行大小限制。声明大小或 MD5 不一致、写入失败、请求超限时会立即删除临时文件；成功后再把临时路径移交给存储层。该模块不使用用户文件名作为本地路径，也不需要把完整文件加载进内存。
+
 ## 目录
 
 ```text

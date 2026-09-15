@@ -4,12 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct {
-    uint32_t state[4];
-    uint64_t bits;
-    unsigned char buffer[64];
-} Md5Context;
-
 #define F(x,y,z) (((x)&(y)) | ((~x)&(z)))
 #define G(x,y,z) (((x)&(z)) | ((y)&(~z)))
 #define H(x,y,z) ((x)^(y)^(z))
@@ -67,9 +61,25 @@ static void transform(uint32_t state[4], const unsigned char block[64])
     state[0] += a; state[1] += b; state[2] += c; state[3] += d;
 }
 
-static void update(Md5Context *ctx, const unsigned char *input, size_t size)
+void md5_init(Md5Context *ctx)
 {
-    size_t pos = (size_t)((ctx->bits >> 3) & 63), take = 64 - pos, i = 0;
+    if (!ctx) return;
+    ctx->state[0] = 0x67452301;
+    ctx->state[1] = 0xefcdab89;
+    ctx->state[2] = 0x98badcfe;
+    ctx->state[3] = 0x10325476;
+    ctx->bits = 0;
+    memset(ctx->buffer, 0, sizeof(ctx->buffer));
+}
+
+void md5_update(Md5Context *ctx, const unsigned char *input, size_t size)
+{
+    size_t pos, take, i = 0;
+
+    if (!ctx || size == 0) return;
+    if (!input) return;
+    pos = (size_t)((ctx->bits >> 3) & 63);
+    take = 64 - pos;
     ctx->bits += (uint64_t)size << 3;
     if (size >= take) {
         memcpy(ctx->buffer + pos, input, take);
@@ -80,26 +90,35 @@ static void update(Md5Context *ctx, const unsigned char *input, size_t size)
     memcpy(ctx->buffer + pos, input + i, size - i);
 }
 
-void md5_hex(const unsigned char *input, size_t size, char output[33])
+void md5_final(Md5Context *ctx, char output[33])
 {
-    Md5Context ctx = {{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476}, 0, {0}};
     unsigned char padding[64] = {0x80}, digest[16], length[8];
     uint64_t bits;
     size_t pos, amount;
     int i;
-    update(&ctx, input, size);
-    bits = ctx.bits;
+
+    if (!ctx || !output) return;
+    bits = ctx->bits;
     for (i = 0; i < 8; ++i) length[i] = (unsigned char)(bits >> (8 * i));
     pos = (size_t)((bits >> 3) & 63);
     amount = pos < 56 ? 56 - pos : 120 - pos;
-    update(&ctx, padding, amount);
-    update(&ctx, length, sizeof(length));
+    md5_update(ctx, padding, amount);
+    md5_update(ctx, length, sizeof(length));
     for (i = 0; i < 4; ++i) {
-        digest[i * 4] = (unsigned char)ctx.state[i];
-        digest[i * 4 + 1] = (unsigned char)(ctx.state[i] >> 8);
-        digest[i * 4 + 2] = (unsigned char)(ctx.state[i] >> 16);
-        digest[i * 4 + 3] = (unsigned char)(ctx.state[i] >> 24);
+        digest[i * 4] = (unsigned char)ctx->state[i];
+        digest[i * 4 + 1] = (unsigned char)(ctx->state[i] >> 8);
+        digest[i * 4 + 2] = (unsigned char)(ctx->state[i] >> 16);
+        digest[i * 4 + 3] = (unsigned char)(ctx->state[i] >> 24);
     }
     for (i = 0; i < 16; ++i) sprintf(output + i * 2, "%02x", digest[i]);
     output[32] = '\0';
+}
+
+void md5_hex(const unsigned char *input, size_t size, char output[33])
+{
+    Md5Context context;
+
+    md5_init(&context);
+    md5_update(&context, input, size);
+    md5_final(&context, output);
 }
