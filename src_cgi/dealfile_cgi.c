@@ -7,6 +7,7 @@
 #include "file_repository.h"
 #include "http_response.h"
 #include "json_util.h"
+#include "runtime_config.h"
 #include "token_service.h"
 #include "user_validation.h"
 
@@ -45,6 +46,7 @@ int main(void)
     char body[MAX_BODY_SIZE], user[33], token[65], md5[33];
     int result, command;
 
+    runtime_config_init();
     while (FCGI_Accept() >= 0) {
         command = get_command(getenv("QUERY_STRING"));
         if (command == 0) {

@@ -1,8 +1,11 @@
 #include "file_repository.h"
 
 #include <mysql/mysql.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "runtime_config.h"
 
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count)
 {
@@ -25,10 +28,10 @@ int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *
     *count = 0;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     stmt = mysql_stmt_init(conn);
     if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
@@ -121,10 +124,10 @@ RecordNewFileResult record_new_file_upload(const NewFileRecord *record)
     if (!valid_new_file_record(record)) return RECORD_NEW_FILE_INVALID_ARGUMENT;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_autocommit(conn, 0) != 0) goto done;
 
@@ -202,10 +205,10 @@ int confirm_new_file_upload(const char *user_name, const char *md5, const char *
     if (!user_name || !md5 || !storage_key) return -1;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
 
     user_length = (unsigned long)strlen(user_name);
@@ -248,10 +251,10 @@ ClaimFileResult claim_existing_file(const char *user, const char *md5, const cha
     if (!user || !md5 || !file_name) return CLAIM_FILE_DATABASE_FAILURE;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_autocommit(conn, 0) != 0) goto done;
 
@@ -327,10 +330,10 @@ int remove_user_file(const char *user, const char *md5)
     if (!user || !md5) return -1;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_autocommit(conn, 0) != 0) goto done;
 
@@ -401,10 +404,10 @@ int share_user_file(const char *user, const char *md5)
     if (!user || !md5) return -1;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_autocommit(conn, 0) != 0) goto done;
 
@@ -465,10 +468,10 @@ int unshare_user_file(const char *user, const char *md5)
     if (!user || !md5) return -1;
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_autocommit(conn, 0) != 0) goto done;
 
@@ -531,10 +534,10 @@ int list_shared_files(SharedFile *files, size_t capacity, size_t *count)
     memset(files, 0, capacity * sizeof(*files));
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
                             3306, NULL, 0)) goto done;
     if (mysql_query(conn, sql) != 0) goto done;
     result_set = mysql_store_result(conn);

@@ -2,6 +2,8 @@
 set -eu
 
 compose_file="docker/docker-compose.yml"
+app_port="${APP_PORT:-8080}"
+base_url="http://localhost:$app_port"
 user_name="e2e_user_$(date +%s)"
 nickname="e2e_nick_$(date +%s)"
 password_md5="5f4dcc3b5aa765d61d8327deb882cf99"
@@ -19,7 +21,7 @@ echo "Starting authentication development stack..."
 docker compose -f "$compose_file" up -d --build
 
 attempt=1
-until curl --silent --fail http://localhost:8080/healthz >/dev/null; do
+until curl --silent --fail "$base_url/healthz" >/dev/null; do
     if [ "$attempt" -ge 30 ]; then
         fail "nginx did not become healthy"
     fi
@@ -30,7 +32,7 @@ done
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
-    http://localhost:8080/api/reg)
+    "$base_url/api/reg")
 case "$register_response" in
     *'"code":0'*) ;;
     *) fail "registration response: $register_response" ;;
@@ -39,7 +41,7 @@ esac
 login_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"password\":\"$password_md5\"}" \
-    http://localhost:8080/api/login)
+    "$base_url/api/login")
 case "$login_response" in
     *'"code":0'*) ;;
     *) fail "login response: $login_response" ;;
@@ -52,6 +54,22 @@ stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
 
+upload_response=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Upload-MD5: e69f5a7894fafefb8981b360cee449d6" \
+    --header "X-Upload-Size: 19" \
+    --form "file=@tests/fixtures/upload.txt;type=text/plain" \
+    "$base_url/api/upload")
+case "$upload_response" in
+    *'"code":4'*'"msg":"storage upload failed"'*) ;;
+    *) fail "upload intake response: $upload_response" ;;
+esac
+
+upload_temp_files=$(docker compose -f "$compose_file" exec -T fastcgi_app \
+    find /tmp -maxdepth 1 -name 'ai-cloud-upload-*' -print)
+[ -z "$upload_temp_files" ] || fail "temporary upload file was not cleaned"
+
 docker compose -f "$compose_file" exec -T fastcgi_app \
     /app/bin_cgi/upload_repository_probe "$user_name" "$transaction_md5" || \
     fail "first-upload database transaction probe"
@@ -59,7 +77,7 @@ docker compose -f "$compose_file" exec -T fastcgi_app \
 missing_file_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$missing_md5\",\"file_name\":\"missing-demo.txt\"}" \
-    http://localhost:8080/api/md5)
+    "$base_url/api/md5")
 case "$missing_file_response" in
     *'"code":1'*'"msg":"physical file not found"'*) ;;
     *) fail "missing physical file response: $missing_file_response" ;;
@@ -68,7 +86,7 @@ esac
 invalid_md5_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"not-an-md5\",\"file_name\":\"invalid-demo.txt\"}" \
-    http://localhost:8080/api/md5)
+    "$base_url/api/md5")
 case "$invalid_md5_response" in
     *'"code":3'*'"msg":"invalid instant upload request"'*) ;;
     *) fail "invalid instant upload request response: $invalid_md5_response" ;;
@@ -80,7 +98,7 @@ docker compose -f "$compose_file" exec -T mysql sh -c \
 instant_upload_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\",\"file_name\":\"shared-demo.txt\"}" \
-    http://localhost:8080/api/md5)
+    "$base_url/api/md5")
 case "$instant_upload_response" in
     *'"code":0'*) ;;
     *) fail "instant upload response: $instant_upload_response" ;;
@@ -89,7 +107,7 @@ esac
 share_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
-    "http://localhost:8080/api/dealfile?cmd=share")
+    "$base_url/api/dealfile?cmd=share")
 case "$share_response" in
     *'"code":0'*) ;;
     *) fail "share response: $share_response" ;;
@@ -98,7 +116,7 @@ esac
 files_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/myfiles)
+    "$base_url/api/myfiles")
 case "$files_response" in
     *'"file_name":"shared-demo.txt","url":'*'"shared_status":1'*) ;;
     *) fail "file list response: $files_response" ;;
@@ -107,7 +125,7 @@ esac
 duplicate_share_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
-    "http://localhost:8080/api/dealfile?cmd=share")
+    "$base_url/api/dealfile?cmd=share")
 case "$duplicate_share_response" in
     *'"code":5'*) ;;
     *) fail "duplicate share response: $duplicate_share_response" ;;
@@ -116,7 +134,7 @@ esac
 unshare_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
-    "http://localhost:8080/api/dealfile?cmd=unshare")
+    "$base_url/api/dealfile?cmd=unshare")
 case "$unshare_response" in
     *'"code":0'*) ;;
     *) fail "unshare response: $unshare_response" ;;
@@ -125,7 +143,7 @@ esac
 files_after_unshare=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/myfiles)
+    "$base_url/api/myfiles")
 case "$files_after_unshare" in
     *'"file_name":"shared-demo.txt","url":'*'"shared_status":0'*) ;;
     *) fail "file list after unshare: $files_after_unshare" ;;
@@ -134,7 +152,7 @@ esac
 duplicate_unshare_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
-    "http://localhost:8080/api/dealfile?cmd=unshare")
+    "$base_url/api/dealfile?cmd=unshare")
 case "$duplicate_unshare_response" in
     *'"code":1'*) ;;
     *) fail "duplicate unshare response: $duplicate_unshare_response" ;;
@@ -143,7 +161,7 @@ esac
 duplicate_upload_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\",\"file_name\":\"shared-demo.txt\"}" \
-    http://localhost:8080/api/md5)
+    "$base_url/api/md5")
 case "$duplicate_upload_response" in
     *'"code":5'*) ;;
     *) fail "duplicate instant upload response: $duplicate_upload_response" ;;
@@ -152,7 +170,7 @@ esac
 delete_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
-    "http://localhost:8080/api/dealfile?cmd=del")
+    "$base_url/api/dealfile?cmd=del")
 case "$delete_response" in
     *'"code":0'*) ;;
     *) fail "delete response: $delete_response" ;;
@@ -161,7 +179,7 @@ esac
 files_after_delete=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/myfiles)
+    "$base_url/api/myfiles")
 case "$files_after_delete" in
     *'"code":0,"files":[]'*) ;;
     *) fail "file list after delete: $files_after_delete" ;;
@@ -170,7 +188,7 @@ esac
 logout_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/logout)
+    "$base_url/api/logout")
 case "$logout_response" in
     *'"code":0'*) ;;
     *) fail "logout response: $logout_response" ;;
@@ -183,7 +201,7 @@ stored_user_after_logout=$(docker compose -f "$compose_file" exec -T redis \
 files_after_logout=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/myfiles)
+    "$base_url/api/myfiles")
 case "$files_after_logout" in
     *'"code":4'*) ;;
     *) fail "old token accepted after logout: $files_after_logout" ;;
@@ -192,7 +210,7 @@ esac
 duplicate_logout_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
-    http://localhost:8080/api/logout)
+    "$base_url/api/logout")
 case "$duplicate_logout_response" in
     *'"code":0'*) ;;
     *) fail "duplicate logout response: $duplicate_logout_response" ;;
@@ -201,7 +219,7 @@ esac
 failed_login_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"password\":\"$wrong_password_md5\"}" \
-    http://localhost:8080/api/login)
+    "$base_url/api/login")
 case "$failed_login_response" in
     *'"code":2'*) ;;
     *) fail "wrong-password response: $failed_login_response" ;;

@@ -5,6 +5,7 @@
 
 #include "http_response.h"
 #include "json_util.h"
+#include "runtime_config.h"
 #include "user_repository.h"
 #include "user_validation.h"
 
@@ -25,6 +26,7 @@ int main(void)
     char body[MAX_BODY_SIZE], user[33], nickname[33], password[33], salt[33], digest[33];
     int result;
 
+    runtime_config_init();
     while (FCGI_Accept() >= 0) {
         if (read_body(body, sizeof(body)) != 0 ||
             json_get_string(body, "user", user, sizeof(user)) != 0 ||

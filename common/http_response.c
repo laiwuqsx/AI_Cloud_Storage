@@ -1,6 +1,6 @@
 #include "http_response.h"
 
-#include <stdio.h>
+#include "fcgi_stdio.h"
 
 void write_json_response(int code, const char *message, const char *token)
 {

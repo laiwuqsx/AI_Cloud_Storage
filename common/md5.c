@@ -1,7 +1,6 @@
 #include "md5.h"
 
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #define F(x,y,z) (((x)&(y)) | ((~x)&(z)))
@@ -92,6 +91,7 @@ void md5_update(Md5Context *ctx, const unsigned char *input, size_t size)
 
 void md5_final(Md5Context *ctx, char output[33])
 {
+    static const char hex[] = "0123456789abcdef";
     unsigned char padding[64] = {0x80}, digest[16], length[8];
     uint64_t bits;
     size_t pos, amount;
@@ -110,7 +110,10 @@ void md5_final(Md5Context *ctx, char output[33])
         digest[i * 4 + 2] = (unsigned char)(ctx->state[i] >> 16);
         digest[i * 4 + 3] = (unsigned char)(ctx->state[i] >> 24);
     }
-    for (i = 0; i < 16; ++i) sprintf(output + i * 2, "%02x", digest[i]);
+    for (i = 0; i < 16; ++i) {
+        output[i * 2] = hex[digest[i] >> 4];
+        output[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
     output[32] = '\0';
 }
 

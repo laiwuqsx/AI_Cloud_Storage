@@ -1,8 +1,11 @@
 #include "user_repository.h"
 
 #include <mysql/mysql.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "runtime_config.h"
 
 int create_user(const char *user, const char *nickname, const char *password_digest,
                 const char *salt)
@@ -17,11 +20,14 @@ int create_user(const char *user, const char *nickname, const char *password_dig
 
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
-                            3306, NULL, 0)) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) {
+        fprintf(stderr, "create_user MySQL connection failed: %s\n", mysql_error(conn));
+        goto done;
+    }
     stmt = mysql_stmt_init(conn);
     if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
 
@@ -60,11 +66,15 @@ int find_user_credentials(const char *user, UserCredentials *credentials)
     memset(credentials, 0, sizeof(*credentials));
     conn = mysql_init(NULL);
     if (!conn) goto done;
-    if (!mysql_real_connect(conn, getenv("MYSQL_HOST") ? getenv("MYSQL_HOST") : "127.0.0.1",
-                            getenv("MYSQL_USER") ? getenv("MYSQL_USER") : "root",
-                            getenv("MYSQL_PASSWORD") ? getenv("MYSQL_PASSWORD") : "",
-                            getenv("MYSQL_DATABASE") ? getenv("MYSQL_DATABASE") : "ai_cloud_storage",
-                            3306, NULL, 0)) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) {
+        fprintf(stderr, "find_user_credentials MySQL connection failed: %s\n",
+                mysql_error(conn));
+        goto done;
+    }
     stmt = mysql_stmt_init(conn);
     if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
 

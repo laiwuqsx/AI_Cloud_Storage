@@ -7,6 +7,7 @@
 
 #include "http_response.h"
 #include "json_util.h"
+#include "runtime_config.h"
 #include "token_service.h"
 #include "user_validation.h"
 
@@ -40,6 +41,7 @@ int main(void)
     const char *method;
     int result;
 
+    runtime_config_init();
     while (FCGI_Accept() >= 0) {
         method = getenv("REQUEST_METHOD");
         if (!method || strcmp(method, "POST") != 0 ||

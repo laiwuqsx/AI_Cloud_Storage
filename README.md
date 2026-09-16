@@ -20,6 +20,19 @@ FastDFS 的 `StorageClient` 适配器已实现：它使用 `fork/execvp` 分别�
 
 文件接收层使用 `mkstemp` 创建权限受限的随机临时文件，并在分块写入时增量计算服务端 MD5、累计真实字节数和执行大小限制。声明大小或 MD5 不一致、写入失败、请求超限时会立即删除临时文件；成功后再把临时路径移交给存储层。该模块不使用用户文件名作为本地路径，也不需要把完整文件加载进内存。
 
+`POST /api/upload` 已接入受限的单文件 `multipart/form-data` 流式解析：请求头 `X-Upload-User`、`X-Upload-Token`、`X-Upload-MD5`、`X-Upload-Size` 分别携带用户、Token、客户端 MD5 和文件字节数，文件 part 必须使用字段名 `file`。接口先验证 Redis Token，再将文件内容交给安全接收层，随后执行 FastDFS 上传和首次入库事务；本地临时文件在成功和失败路径都会清理。Nginx 对该路由关闭请求体缓存，当前限制为 12 MiB，应用文件限制为 10 MiB。
+
+```sh
+curl -X POST http://localhost:8080/api/upload \
+  -H "X-Upload-User: alice" \
+  -H "X-Upload-Token: <64-character-token>" \
+  -H "X-Upload-MD5: <32-character-md5>" \
+  -H "X-Upload-Size: <file-byte-count>" \
+  -F "file=@./example.txt"
+```
+
+当前 Docker 栈仍未安装 FastDFS CLI，也没有启动 tracker/storage；因此上传入口、解析和业务编排可以编译与单测，但真实 FastDFS 上传要等下一步补齐运行环境后才能端到端通过。
+
 ## 目录
 
 ```text

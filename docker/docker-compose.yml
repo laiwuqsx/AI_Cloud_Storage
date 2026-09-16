@@ -37,6 +37,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       TOKEN_TTL_SECONDS: 86400
+      UPLOAD_MAX_BYTES: 10485760
+      UPLOAD_TEMP_DIR: /tmp
+      FASTDFS_CLIENT_CONFIG: /etc/fdfs/client.conf
+      FASTDFS_PUBLIC_BASE_URL: http://storage.local
     depends_on:
       mysql:
         condition: service_healthy

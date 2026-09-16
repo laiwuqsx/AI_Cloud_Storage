@@ -7,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "runtime_config.h"
+
 static int random_hex_token(char *output, size_t output_size)
 {
     static const char hex[] = "0123456789abcdef";
@@ -34,10 +36,10 @@ int create_session_token(const char *user, char *token, size_t token_size)
     struct timeval timeout = {1, 500000};
     redisContext *redis = NULL;
     redisReply *reply = NULL;
-    const char *host = getenv("REDIS_HOST");
-    const char *port_text = getenv("REDIS_PORT");
+    const char *host = runtime_config_get("REDIS_HOST", NULL);
+    const char *port_text = runtime_config_get("REDIS_PORT", NULL);
     int port = port_text ? atoi(port_text) : 6379;
-    int ttl = getenv("TOKEN_TTL_SECONDS") ? atoi(getenv("TOKEN_TTL_SECONDS")) : 86400;
+    int ttl = atoi(runtime_config_get("TOKEN_TTL_SECONDS", "86400"));
     int result = -1;
 
     if (!user || random_hex_token(token, token_size) != 0 || ttl <= 0) return -1;
@@ -57,8 +59,8 @@ int verify_session_token(const char *user, const char *token)
     struct timeval timeout = {1, 500000};
     redisContext *redis = NULL;
     redisReply *reply = NULL;
-    const char *host = getenv("REDIS_HOST");
-    const char *port_text = getenv("REDIS_PORT");
+    const char *host = runtime_config_get("REDIS_HOST", NULL);
+    const char *port_text = runtime_config_get("REDIS_PORT", NULL);
     int port = port_text ? atoi(port_text) : 6379;
     int result = -1;
 
@@ -85,8 +87,8 @@ int revoke_session_token(const char *user, const char *token)
     struct timeval timeout = {1, 500000};
     redisContext *redis = NULL;
     redisReply *reply = NULL;
-    const char *host = getenv("REDIS_HOST");
-    const char *port_text = getenv("REDIS_PORT");
+    const char *host = runtime_config_get("REDIS_HOST", NULL);
+    const char *port_text = runtime_config_get("REDIS_PORT", NULL);
     const char *arguments[5];
     char key[72];
     int port = port_text ? atoi(port_text) : 6379;

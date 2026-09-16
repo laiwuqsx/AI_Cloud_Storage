@@ -6,6 +6,7 @@
 
 #include "http_response.h"
 #include "json_util.h"
+#include "runtime_config.h"
 #include "token_service.h"
 #include "user_repository.h"
 #include "user_validation.h"
@@ -43,6 +44,7 @@ int main(void)
     UserCredentials credentials;
     int lookup_result;
 
+    runtime_config_init();
     while (FCGI_Accept() >= 0) {
         if (read_request_body(body, sizeof(body)) != 0 ||
             json_get_string(body, "user", user, sizeof(user)) != 0 ||

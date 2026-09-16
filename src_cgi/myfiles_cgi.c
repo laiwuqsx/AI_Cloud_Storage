@@ -6,6 +6,7 @@
 #include "file_repository.h"
 #include "http_response.h"
 #include "json_util.h"
+#include "runtime_config.h"
 #include "token_service.h"
 #include "user_validation.h"
 
@@ -62,6 +63,7 @@ int main(void)
     UserFile files[MAX_FILES_PER_RESPONSE];
     size_t count;
 
+    runtime_config_init();
     while (FCGI_Accept() >= 0) {
         if (read_body(body, sizeof(body)) != 0 ||
             json_get_string(body, "user", user, sizeof(user)) != 0 ||

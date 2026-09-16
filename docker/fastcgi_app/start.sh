@@ -7,5 +7,6 @@ spawn-fcgi -n -a 0.0.0.0 -p 10002 -f /app/bin_cgi/myfiles &
 spawn-fcgi -n -a 0.0.0.0 -p 10003 -f /app/bin_cgi/md5 &
 spawn-fcgi -n -a 0.0.0.0 -p 10004 -f /app/bin_cgi/dealfile &
 spawn-fcgi -n -a 0.0.0.0 -p 10005 -f /app/bin_cgi/logout &
+spawn-fcgi -n -a 0.0.0.0 -p 10006 -f /app/bin_cgi/upload &
 
 wait
