@@ -13,9 +13,13 @@ missing_md5="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 transaction_md5=$(printf "%032d" "$(date +%s)")
 upload_fixture=$(mktemp)
 downloaded_fixture=$(mktemp)
+race_fixture=$(mktemp)
+race_response_file_a=$(mktemp)
+race_response_file_b=$(mktemp)
 
 cleanup() {
-    rm -f "$upload_fixture" "$downloaded_fixture"
+    rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" \
+        "$race_response_file_a" "$race_response_file_b"
 }
 
 trap cleanup EXIT HUP INT TERM
@@ -26,6 +30,19 @@ if command -v md5sum >/dev/null 2>&1; then
     upload_md5=$(md5sum "$upload_fixture" | awk '{print $1}')
 else
     upload_md5=$(md5 -q "$upload_fixture")
+fi
+
+race_suffix="$(date +%s)_$$"
+race_user_a="race_a_$race_suffix"
+race_user_b="race_b_$race_suffix"
+race_nickname_a="race_nick_a_$race_suffix"
+race_nickname_b="race_nick_b_$race_suffix"
+printf 'Concurrent FastDFS fixture for %s\n' "$race_suffix" > "$race_fixture"
+race_size=$(wc -c < "$race_fixture" | tr -d '[:space:]')
+if command -v md5sum >/dev/null 2>&1; then
+    race_md5=$(md5sum "$race_fixture" | awk '{print $1}')
+else
+    race_md5=$(md5 -q "$race_fixture")
 fi
 
 fail() {
@@ -100,6 +117,86 @@ esac
 upload_temp_files=$(docker compose -f "$compose_file" exec -T fastcgi_app \
     find /tmp -maxdepth 1 -name 'ai-cloud-upload-*' -print)
 [ -z "$upload_temp_files" ] || fail "temporary upload file was not cleaned"
+
+race_register_a=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"nickname\":\"$race_nickname_a\",\"password\":\"$password_md5\"}" \
+    "$base_url/api/reg")
+case "$race_register_a" in
+    *'"code":0'*) ;;
+    *) fail "race user A registration response: $race_register_a" ;;
+esac
+
+race_register_b=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_b\",\"nickname\":\"$race_nickname_b\",\"password\":\"$password_md5\"}" \
+    "$base_url/api/reg")
+case "$race_register_b" in
+    *'"code":0'*) ;;
+    *) fail "race user B registration response: $race_register_b" ;;
+esac
+
+race_login_a=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"password\":\"$password_md5\"}" \
+    "$base_url/api/login")
+race_token_a=$(printf "%s" "$race_login_a" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+[ -n "$race_token_a" ] || fail "race user A login response: $race_login_a"
+
+race_login_b=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_b\",\"password\":\"$password_md5\"}" \
+    "$base_url/api/login")
+race_token_b=$(printf "%s" "$race_login_b" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+[ -n "$race_token_b" ] || fail "race user B login response: $race_login_b"
+
+physical_files_before=$(docker compose -f "$compose_file" exec -T storage sh -c \
+    'find /data/fastdfs/storage/data -type f | wc -l' | tr -d '[:space:]')
+
+curl --silent --show-error --request POST \
+    --header "X-Upload-User: $race_user_a" \
+    --header "X-Upload-Token: $race_token_a" \
+    --header "X-Upload-MD5: $race_md5" \
+    --header "X-Upload-Size: $race_size" \
+    --form "file=@$race_fixture;filename=race-a.txt;type=text/plain" \
+    "$base_url/api/upload" > "$race_response_file_a" &
+race_pid_a=$!
+
+curl --silent --show-error --request POST \
+    --header "X-Upload-User: $race_user_b" \
+    --header "X-Upload-Token: $race_token_b" \
+    --header "X-Upload-MD5: $race_md5" \
+    --header "X-Upload-Size: $race_size" \
+    --form "file=@$race_fixture;filename=race-b.txt;type=text/plain" \
+    "$base_url/api/upload" > "$race_response_file_b" &
+race_pid_b=$!
+
+wait "$race_pid_a" || fail "race user A upload request failed"
+wait "$race_pid_b" || fail "race user B upload request failed"
+race_response_a=$(cat "$race_response_file_a")
+race_response_b=$(cat "$race_response_file_b")
+case "$race_response_a" in
+    *'"code":0'*'"url":'*) ;;
+    *) fail "race user A upload response: $race_response_a" ;;
+esac
+case "$race_response_b" in
+    *'"code":0'*'"url":'*) ;;
+    *) fail "race user B upload response: $race_response_b" ;;
+esac
+race_url_a=$(printf "%s" "$race_response_a" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+race_url_b=$(printf "%s" "$race_response_b" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+[ -n "$race_url_a" ] && [ "$race_url_a" = "$race_url_b" ] || \
+    fail "concurrent uploads did not converge on one URL: $race_url_a / $race_url_b"
+
+race_db_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f JOIN user_file_list u ON u.md5 = f.md5 WHERE f.md5 = '\''$1'\'' GROUP BY f.reference_count;"' \
+    sh "$race_md5")
+[ "$race_db_row" = "2|2" ] || fail "concurrent upload database state: $race_db_row"
+
+physical_files_after=$(docker compose -f "$compose_file" exec -T storage sh -c \
+    'find /data/fastdfs/storage/data -type f | wc -l' | tr -d '[:space:]')
+[ "$physical_files_after" -eq $((physical_files_before + 1)) ] || \
+    fail "duplicate FastDFS object was not cleaned: before=$physical_files_before after=$physical_files_after"
 
 docker compose -f "$compose_file" exec -T fastcgi_app \
     /app/bin_cgi/upload_repository_probe "$user_name" "$transaction_md5" || \

@@ -32,6 +32,11 @@ typedef enum {
 } ClaimFileResult;
 
 typedef struct {
+    char storage_key[257];
+    char url[513];
+} FileLocation;
+
+typedef struct {
     const char *user_name;
     const char *md5;
     const char *file_name;
@@ -59,6 +64,11 @@ RecordNewFileResult record_new_file_upload(const NewFileRecord *record);
 int confirm_new_file_upload(const char *user_name, const char *md5, const char *storage_key);
 
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name);
+
+/* Same atomic claim operation, also returning the already committed physical object. */
+ClaimFileResult claim_existing_file_with_location(const char *user, const char *md5,
+                                                  const char *file_name,
+                                                  FileLocation *location);
 
 /* 0: removed, 1: user-file relationship does not exist, -1: database failure. */
 int remove_user_file(const char *user, const char *md5);

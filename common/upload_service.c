@@ -32,7 +32,9 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
     int confirmation;
 
     if (!storage || !repository || !repository->record || !repository->confirm ||
-        !valid_request(request)) return FIRST_UPLOAD_INVALID_ARGUMENT;
+        !repository->claim_existing || !valid_request(request)) {
+        return FIRST_UPLOAD_INVALID_ARGUMENT;
+    }
     if (storage_client_upload(storage, request->local_path, &uploaded) != 0) {
         return FIRST_UPLOAD_STORAGE_FAILED;
     }
@@ -51,7 +53,21 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
         return FIRST_UPLOAD_OK;
     }
     if (record_result == RECORD_NEW_FILE_PHYSICAL_CONFLICT) {
-        return remove_uploaded_object(storage, &uploaded, FIRST_UPLOAD_PHYSICAL_CONFLICT);
+        StoredObject existing;
+        ClaimFileResult claim_result;
+
+        if (storage_client_remove(storage, uploaded.storage_key) != 0) {
+            return FIRST_UPLOAD_CLEANUP_FAILED;
+        }
+        claim_result = repository->claim_existing(
+            repository->context, request->user_name, request->md5,
+            request->file_name, &existing);
+        if (claim_result == CLAIM_FILE_LINKED ||
+            claim_result == CLAIM_FILE_ALREADY_OWNED) {
+            if (stored_object) *stored_object = existing;
+            return FIRST_UPLOAD_OK;
+        }
+        return FIRST_UPLOAD_DATABASE_FAILED;
     }
     if (record_result != RECORD_NEW_FILE_COMMIT_UNKNOWN) {
         return remove_uploaded_object(storage, &uploaded, FIRST_UPLOAD_DATABASE_FAILED);

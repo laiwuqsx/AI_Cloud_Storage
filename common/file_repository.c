@@ -238,15 +238,19 @@ done:
     return result;
 }
 
-ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name)
+ClaimFileResult claim_existing_file_with_location(const char *user, const char *md5,
+                                                  const char *file_name,
+                                                  FileLocation *location)
 {
     MYSQL *conn = NULL;
     MYSQL_STMT *check_stmt = NULL;
     MYSQL_STMT *insert_stmt = NULL;
     MYSQL_STMT *increment_stmt = NULL;
-    MYSQL_BIND check_bind[1], insert_bind[3], increment_bind[1];
-    unsigned long md5_length, user_length, name_length;
-    const char *check_sql = "SELECT 1 FROM file_info WHERE md5 = ? FOR UPDATE";
+    MYSQL_BIND check_bind[1], location_bind[2], insert_bind[3], increment_bind[1];
+    unsigned long md5_length, user_length, name_length, location_lengths[2];
+    char storage_key[257], url[513];
+    const char *check_sql =
+        "SELECT storage_key, url FROM file_info WHERE md5 = ? FOR UPDATE";
     const char *insert_sql =
         "INSERT INTO user_file_list (user_name, md5, file_name) VALUES (?, ?, ?)";
     const char *increment_sql =
@@ -254,6 +258,7 @@ ClaimFileResult claim_existing_file(const char *user, const char *md5, const cha
     ClaimFileResult result = CLAIM_FILE_DATABASE_FAILURE;
 
     if (!user || !md5 || !file_name) return CLAIM_FILE_DATABASE_FAILURE;
+    if (location) memset(location, 0, sizeof(*location));
     conn = mysql_init(NULL);
     if (!conn) goto done;
     if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
@@ -270,11 +275,33 @@ ClaimFileResult claim_existing_file(const char *user, const char *md5, const cha
     check_bind[0].buffer_type = MYSQL_TYPE_STRING;
     check_bind[0].buffer = (void *)md5;
     check_bind[0].length = &md5_length;
+    memset(storage_key, 0, sizeof(storage_key));
+    memset(url, 0, sizeof(url));
+    memset(location_bind, 0, sizeof(location_bind));
+    location_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    location_bind[0].buffer = storage_key;
+    location_bind[0].buffer_length = sizeof(storage_key) - 1;
+    location_bind[0].length = &location_lengths[0];
+    location_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    location_bind[1].buffer = url;
+    location_bind[1].buffer_length = sizeof(url) - 1;
+    location_bind[1].length = &location_lengths[1];
     if (mysql_stmt_bind_param(check_stmt, check_bind) != 0 ||
-        mysql_stmt_execute(check_stmt) != 0 || mysql_stmt_store_result(check_stmt) != 0) goto rollback;
+        mysql_stmt_execute(check_stmt) != 0 ||
+        mysql_stmt_bind_result(check_stmt, location_bind) != 0 ||
+        mysql_stmt_store_result(check_stmt) != 0) goto rollback;
     if (mysql_stmt_num_rows(check_stmt) == 0) {
         result = CLAIM_FILE_PHYSICAL_MISSING;
         goto rollback;
+    }
+    if (mysql_stmt_fetch(check_stmt) != 0 ||
+        location_lengths[0] >= sizeof(storage_key) ||
+        location_lengths[1] >= sizeof(url)) goto rollback;
+    storage_key[location_lengths[0]] = '\0';
+    url[location_lengths[1]] = '\0';
+    if (location) {
+        memcpy(location->storage_key, storage_key, location_lengths[0] + 1);
+        memcpy(location->url, url, location_lengths[1] + 1);
     }
 
     insert_stmt = mysql_stmt_init(conn);
@@ -315,6 +342,12 @@ done:
     if (increment_stmt) mysql_stmt_close(increment_stmt);
     if (conn) mysql_close(conn);
     return result;
+}
+
+ClaimFileResult claim_existing_file(const char *user, const char *md5,
+                                    const char *file_name)
+{
+    return claim_existing_file_with_location(user, md5, file_name, NULL);
 }
 
 int remove_user_file(const char *user, const char *md5)

@@ -92,6 +92,24 @@ static int repository_confirm(void *unused, const char *user_name, const char *m
     return confirm_new_file_upload(user_name, md5, storage_key);
 }
 
+static ClaimFileResult repository_claim_existing(void *unused, const char *user_name,
+                                                 const char *md5, const char *file_name,
+                                                 StoredObject *stored_object)
+{
+    FileLocation location;
+    ClaimFileResult result;
+
+    (void)unused;
+    result = claim_existing_file_with_location(user_name, md5, file_name, &location);
+    if ((result == CLAIM_FILE_LINKED || result == CLAIM_FILE_ALREADY_OWNED) &&
+        stored_object) {
+        memcpy(stored_object->storage_key, location.storage_key,
+               strlen(location.storage_key) + 1);
+        memcpy(stored_object->url, location.url, strlen(location.url) + 1);
+    }
+    return result;
+}
+
 static void file_type_from_name(const char *file_name, char output[33])
 {
     const char *dot = strrchr(file_name, '.');
@@ -162,7 +180,12 @@ static void handle_upload_request(void)
     MultipartFileInfo file_info;
     FastDfsStorageContext fastdfs_context;
     StorageClient storage;
-    UploadRepository repository = {NULL, repository_record, repository_confirm};
+    UploadRepository repository = {
+        NULL,
+        repository_record,
+        repository_confirm,
+        repository_claim_existing
+    };
     FirstUploadRequest request;
     StoredObject stored;
     FirstUploadResult upload_result;

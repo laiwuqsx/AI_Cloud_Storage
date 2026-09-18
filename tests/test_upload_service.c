@@ -8,10 +8,12 @@ typedef struct {
     int remove_result;
     RecordNewFileResult record_result;
     int confirm_result;
+    ClaimFileResult claim_result;
     int upload_calls;
     int remove_calls;
     int record_calls;
     int confirm_calls;
+    int claim_calls;
     char removed_key[STORAGE_KEY_CAPACITY];
 } FakeState;
 
@@ -60,10 +62,33 @@ static int fake_confirm(void *context, const char *user_name, const char *md5,
     return state->confirm_result;
 }
 
+static ClaimFileResult fake_claim_existing(void *context, const char *user_name,
+                                           const char *md5, const char *file_name,
+                                           StoredObject *stored)
+{
+    FakeState *state = context;
+
+    ++state->claim_calls;
+    if (strcmp(user_name, "alice") != 0 ||
+        strcmp(md5, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+        strcmp(file_name, "demo.txt") != 0) {
+        return CLAIM_FILE_DATABASE_FAILURE;
+    }
+    snprintf(stored->storage_key, sizeof(stored->storage_key), "group1/winner-key");
+    snprintf(stored->url, sizeof(stored->url),
+             "http://storage.local/group1/winner-key");
+    return state->claim_result;
+}
+
 static FirstUploadResult run_upload(FakeState *state, StoredObject *stored)
 {
     StorageClient storage = {state, fake_upload, fake_remove};
-    UploadRepository repository = {state, fake_record, fake_confirm};
+    UploadRepository repository = {
+        state,
+        fake_record,
+        fake_confirm,
+        fake_claim_existing
+    };
     FirstUploadRequest request = {
         "/tmp/demo.txt",
         "alice",
@@ -81,6 +106,7 @@ static void reset_state(FakeState *state)
     memset(state, 0, sizeof(*state));
     state->record_result = RECORD_NEW_FILE_CREATED;
     state->confirm_result = 1;
+    state->claim_result = CLAIM_FILE_LINKED;
 }
 
 #define EXPECT(condition, message) do { \
@@ -114,8 +140,35 @@ int main(void)
 
     reset_state(&state);
     state.record_result = RECORD_NEW_FILE_PHYSICAL_CONFLICT;
-    EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_PHYSICAL_CONFLICT, "physical conflict");
-    EXPECT(state.remove_calls == 1, "conflict removes duplicate object");
+    EXPECT(run_upload(&state, &stored) == FIRST_UPLOAD_OK, "physical conflict is reused");
+    EXPECT(state.remove_calls == 1 && state.claim_calls == 1,
+           "conflict removes duplicate then claims winner");
+    EXPECT(strcmp(stored.storage_key, "group1/winner-key") == 0,
+           "conflict returns winner object");
+
+    reset_state(&state);
+    state.record_result = RECORD_NEW_FILE_PHYSICAL_CONFLICT;
+    state.claim_result = CLAIM_FILE_ALREADY_OWNED;
+    EXPECT(run_upload(&state, &stored) == FIRST_UPLOAD_OK,
+           "same-user concurrent upload is idempotent");
+    EXPECT(state.remove_calls == 1 && state.claim_calls == 1,
+           "same-user conflict removes duplicate without incrementing twice");
+
+    reset_state(&state);
+    state.record_result = RECORD_NEW_FILE_PHYSICAL_CONFLICT;
+    state.claim_result = CLAIM_FILE_DATABASE_FAILURE;
+    EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_DATABASE_FAILED,
+           "claim failure is visible after conflict cleanup");
+    EXPECT(state.remove_calls == 1 && state.claim_calls == 1,
+           "claim failure occurs after duplicate cleanup");
+
+    reset_state(&state);
+    state.record_result = RECORD_NEW_FILE_PHYSICAL_CONFLICT;
+    state.remove_result = -1;
+    EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_CLEANUP_FAILED,
+           "conflict cleanup failure is visible");
+    EXPECT(state.claim_calls == 0,
+           "failed duplicate cleanup does not create a logical reference");
 
     reset_state(&state);
     state.record_result = RECORD_NEW_FILE_DATABASE_FAILURE;

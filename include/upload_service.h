@@ -10,6 +10,9 @@ typedef struct {
     /* 1: exact committed record exists, 0: absent, -1: unable to confirm. */
     int (*confirm)(void *context, const char *user_name, const char *md5,
                    const char *storage_key);
+    ClaimFileResult (*claim_existing)(void *context, const char *user_name,
+                                      const char *md5, const char *file_name,
+                                      StoredObject *stored_object);
 } UploadRepository;
 
 typedef struct {
