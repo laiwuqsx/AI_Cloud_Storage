@@ -10,13 +10,13 @@
 Nginx -> C FastCGI -> MySQL / Redis
 ```
 
-已实现注册、登录、退出登录、用户文件列表、MD5 秒传、逻辑删除以及分享状态管理。FastDFS 普通上传、分片上传、受控分享链接、前端和 FAISS 检索仍在后续阶段。
+已实现注册、登录、退出登录、用户文件列表、MD5 秒传、普通文件上传与下载、逻辑删除以及分享状态管理。大文件分片上传、受控分享链接、前端和 FAISS 检索仍在后续阶段。
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交，MD5 唯一约束用于识别并发首传冲突。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
-上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。当前已用假存储覆盖这些分支，FastDFS 适配器尚未接入。
+上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。这些异常分支已用假存储覆盖；Docker 开发栈也已接入真实 FastDFS 服务。
 
-FastDFS 的 `StorageClient` 适配器已实现：它使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。配置示例位于 `conf/fastdfs-client.conf.example`；当前 Docker 开发栈尚未安装 FastDFS CLI 或启动 tracker/storage，所以适配器还没有接入公开上传接口。
+FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。Docker 镜像从官方源码构建固定版本的 FastDFS 及其依赖，开发栈启动一个 tracker 和一个 storage。
 
 文件接收层使用 `mkstemp` 创建权限受限的随机临时文件，并在分块写入时增量计算服务端 MD5、累计真实字节数和执行大小限制。声明大小或 MD5 不一致、写入失败、请求超限时会立即删除临时文件；成功后再把临时路径移交给存储层。该模块不使用用户文件名作为本地路径，也不需要把完整文件加载进内存。
 
@@ -31,7 +31,7 @@ curl -X POST http://localhost:8080/api/upload \
   -F "file=@./example.txt"
 ```
 
-当前 Docker 栈仍未安装 FastDFS CLI，也没有启动 tracker/storage；因此上传入口、解析和业务编排可以编译与单测，但真实 FastDFS 上传要等下一步补齐运行环境后才能端到端通过。
+开发环境的下载 URL 由 Nginx 只读映射单个 storage 数据卷，例如 `/storage/group1/M00/...`。这个映射便于本地学习和端到端验证；生产环境有多个 storage 时，应使用 `fastdfs-nginx-module` 或后续规划中的鉴权下载接口，不能依赖单节点数据卷映射。
 
 ## 目录
 
@@ -75,4 +75,4 @@ Docker 守护进程运行后，在项目根目录执行：
 
     make e2e
 
-测试会启动开发栈，覆盖注册、登录、Redis Token、秒传、文件列表、分享、取消分享、删除和退出登录。退出后会检查 Redis key 已删除、旧 Token 被拒绝，并验证重复退出可安全重试。
+测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、下载内容校验、上传事务入库、秒传、文件列表、分享、取消分享、删除和退出登录。退出后会检查 Redis key 已删除、旧 Token 被拒绝，并验证重复退出可安全重试。

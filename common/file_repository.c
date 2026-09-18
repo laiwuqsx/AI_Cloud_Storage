@@ -13,10 +13,11 @@ int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *
     MYSQL_STMT *stmt = NULL;
     MYSQL_BIND parameter[1], result_bind[7];
     unsigned long user_length, lengths[5];
+    char md5[33], file_name[129], url[513], type[33], create_time[20];
     my_ulonglong size;
     unsigned int shared_status;
     size_t index = 0;
-    int fetch_result;
+    int fetch_result = MYSQL_NO_DATA;
     const char *sql =
         "SELECT u.md5, u.file_name, f.url, f.size, f.type, u.shared_status, "
         "DATE_FORMAT(u.create_time, '%Y-%m-%d %H:%i:%s') "
@@ -46,42 +47,46 @@ int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *
 
     memset(result_bind, 0, sizeof(result_bind));
     memset(files, 0, capacity * sizeof(*files));
+    memset(md5, 0, sizeof(md5));
+    memset(file_name, 0, sizeof(file_name));
+    memset(url, 0, sizeof(url));
+    memset(type, 0, sizeof(type));
+    memset(create_time, 0, sizeof(create_time));
     result_bind[0].buffer_type = MYSQL_TYPE_STRING;
-    result_bind[0].buffer = files[0].md5; result_bind[0].buffer_length = sizeof(files[0].md5) - 1;
+    result_bind[0].buffer = md5; result_bind[0].buffer_length = sizeof(md5) - 1;
     result_bind[0].length = &lengths[0];
     result_bind[1].buffer_type = MYSQL_TYPE_STRING;
-    result_bind[1].buffer = files[0].file_name; result_bind[1].buffer_length = sizeof(files[0].file_name) - 1;
+    result_bind[1].buffer = file_name; result_bind[1].buffer_length = sizeof(file_name) - 1;
     result_bind[1].length = &lengths[1];
     result_bind[2].buffer_type = MYSQL_TYPE_STRING;
-    result_bind[2].buffer = files[0].url; result_bind[2].buffer_length = sizeof(files[0].url) - 1;
+    result_bind[2].buffer = url; result_bind[2].buffer_length = sizeof(url) - 1;
     result_bind[2].length = &lengths[2];
     result_bind[3].buffer_type = MYSQL_TYPE_LONGLONG;
     result_bind[3].buffer = &size; result_bind[3].is_unsigned = 1;
     result_bind[4].buffer_type = MYSQL_TYPE_STRING;
-    result_bind[4].buffer = files[0].type; result_bind[4].buffer_length = sizeof(files[0].type) - 1;
+    result_bind[4].buffer = type; result_bind[4].buffer_length = sizeof(type) - 1;
     result_bind[4].length = &lengths[3];
     result_bind[5].buffer_type = MYSQL_TYPE_LONG;
     result_bind[5].buffer = &shared_status; result_bind[5].is_unsigned = 1;
     result_bind[6].buffer_type = MYSQL_TYPE_STRING;
-    result_bind[6].buffer = files[0].create_time; result_bind[6].buffer_length = sizeof(files[0].create_time) - 1;
+    result_bind[6].buffer = create_time; result_bind[6].buffer_length = sizeof(create_time) - 1;
     result_bind[6].length = &lengths[4];
     if (mysql_stmt_bind_result(stmt, result_bind) != 0) goto done;
 
     while (index < capacity && (fetch_result = mysql_stmt_fetch(stmt)) == 0) {
-        files[index].md5[32] = '\0';
-        files[index].file_name[sizeof(files[index].file_name) - 1] = '\0';
-        files[index].url[sizeof(files[index].url) - 1] = '\0';
-        files[index].type[sizeof(files[index].type) - 1] = '\0';
-        files[index].create_time[sizeof(files[index].create_time) - 1] = '\0';
+        md5[lengths[0]] = '\0';
+        file_name[lengths[1]] = '\0';
+        url[lengths[2]] = '\0';
+        type[lengths[3]] = '\0';
+        create_time[lengths[4]] = '\0';
+        memcpy(files[index].md5, md5, lengths[0] + 1);
+        memcpy(files[index].file_name, file_name, lengths[1] + 1);
+        memcpy(files[index].url, url, lengths[2] + 1);
+        memcpy(files[index].type, type, lengths[3] + 1);
+        memcpy(files[index].create_time, create_time, lengths[4] + 1);
         files[index].size = size;
         files[index].shared_status = shared_status;
         ++index;
-        if (index == capacity) break;
-        result_bind[0].buffer = files[index].md5;
-        result_bind[1].buffer = files[index].file_name;
-        result_bind[2].buffer = files[index].url;
-        result_bind[4].buffer = files[index].type;
-        result_bind[6].buffer = files[index].create_time;
     }
     if (fetch_result != MYSQL_NO_DATA && fetch_result != 0) goto done;
     *count = index;

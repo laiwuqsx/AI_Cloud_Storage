@@ -1,7 +1,7 @@
 connect_timeout=5
 network_timeout=30
 base_path=/tmp/fastdfs-client
-tracker_server=fastdfs:22122
+tracker_server=tracker:22122
 log_level=info
 use_connection_pool=false
 connection_pool_max_idle_time=3600
