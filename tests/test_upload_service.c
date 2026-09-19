@@ -14,7 +14,11 @@ typedef struct {
     int record_calls;
     int confirm_calls;
     int claim_calls;
+    int schedule_result;
+    int schedule_calls;
     char removed_key[STORAGE_KEY_CAPACITY];
+    char scheduled_key[STORAGE_KEY_CAPACITY];
+    char scheduled_reason[65];
 } FakeState;
 
 static int fake_upload(void *context, const char *local_path, StoredObject *stored)
@@ -80,14 +84,27 @@ static ClaimFileResult fake_claim_existing(void *context, const char *user_name,
     return state->claim_result;
 }
 
+static int fake_schedule_cleanup(void *context, const char *storage_key,
+                                 const char *reason, const char *last_error)
+{
+    FakeState *state = context;
+
+    ++state->schedule_calls;
+    snprintf(state->scheduled_key, sizeof(state->scheduled_key), "%s", storage_key);
+    snprintf(state->scheduled_reason, sizeof(state->scheduled_reason), "%s", reason);
+    if (strcmp(last_error, "FastDFS delete command failed") != 0) return -1;
+    return state->schedule_result;
+}
+
 static FirstUploadResult run_upload(FakeState *state, StoredObject *stored)
 {
     StorageClient storage = {state, fake_upload, fake_remove};
     UploadRepository repository = {
-        state,
-        fake_record,
-        fake_confirm,
-        fake_claim_existing
+        .context = state,
+        .record = fake_record,
+        .confirm = fake_confirm,
+        .claim_existing = fake_claim_existing,
+        .schedule_cleanup = fake_schedule_cleanup
     };
     FirstUploadRequest request = {
         "/tmp/demo.txt",
@@ -169,11 +186,18 @@ int main(void)
            "conflict cleanup failure is visible");
     EXPECT(state.claim_calls == 0,
            "failed duplicate cleanup does not create a logical reference");
+    EXPECT(state.schedule_calls == 1 &&
+           strcmp(state.scheduled_key, "group1/demo-key") == 0 &&
+           strcmp(state.scheduled_reason, "concurrent_upload_duplicate") == 0,
+           "failed duplicate cleanup is persisted");
 
     reset_state(&state);
     state.record_result = RECORD_NEW_FILE_DATABASE_FAILURE;
     state.remove_result = -1;
     EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_CLEANUP_FAILED, "cleanup failure is visible");
+    EXPECT(state.schedule_calls == 1 &&
+           strcmp(state.scheduled_reason, "upload_database_failure") == 0,
+           "database failure cleanup is persisted");
 
     reset_state(&state);
     state.record_result = RECORD_NEW_FILE_COMMIT_UNKNOWN;
@@ -188,6 +212,16 @@ int main(void)
     EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_DATABASE_FAILED, "unknown commit absent");
     EXPECT(state.confirm_calls == 1 && state.remove_calls == 1,
            "absent commit removes uploaded object");
+
+    reset_state(&state);
+    state.record_result = RECORD_NEW_FILE_COMMIT_UNKNOWN;
+    state.confirm_result = 0;
+    state.remove_result = -1;
+    EXPECT(run_upload(&state, NULL) == FIRST_UPLOAD_CLEANUP_FAILED,
+           "confirmed absent commit queues failed cleanup");
+    EXPECT(state.schedule_calls == 1 &&
+           strcmp(state.scheduled_reason, "commit_confirmed_absent") == 0,
+           "confirmed absent cleanup reason");
 
     reset_state(&state);
     state.record_result = RECORD_NEW_FILE_COMMIT_UNKNOWN;

@@ -13,6 +13,9 @@ typedef struct {
     ClaimFileResult (*claim_existing)(void *context, const char *user_name,
                                       const char *md5, const char *file_name,
                                       StoredObject *stored_object);
+    /* Persist a deletion that could not be completed immediately. */
+    int (*schedule_cleanup)(void *context, const char *storage_key,
+                            const char *reason, const char *last_error);
 } UploadRepository;
 
 typedef struct {

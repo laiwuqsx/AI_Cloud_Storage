@@ -62,6 +62,11 @@ until curl --silent --fail "$base_url/healthz" >/dev/null; do
     sleep 1
 done
 
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+    < sql/migrations/001_storage_cleanup_job.sql || \
+    fail "storage cleanup migration"
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -201,6 +206,36 @@ physical_files_after=$(docker compose -f "$compose_file" exec -T storage sh -c \
 docker compose -f "$compose_file" exec -T fastcgi_app \
     /app/bin_cgi/upload_repository_probe "$user_name" "$transaction_md5" || \
     fail "first-upload database transaction probe"
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/cleanup_repository_probe "$transaction_md5" || \
+    fail "storage cleanup repository probe"
+
+cleanup_worker_key=$(docker compose -f "$compose_file" exec -T fastcgi_app sh -c \
+    'temporary_file=$(mktemp); printf "cleanup worker fixture\n" > "$temporary_file"; fdfs_upload_file /etc/fdfs/client.conf "$temporary_file"; rm -f "$temporary_file"')
+case "$cleanup_worker_key" in
+    group1/M00/*) ;;
+    *) fail "cleanup worker fixture upload: $cleanup_worker_key" ;;
+esac
+curl --silent --show-error --fail \
+    "$base_url/storage/$cleanup_worker_key" >/dev/null || \
+    fail "cleanup worker fixture was not downloadable"
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO storage_cleanup_job (storage_key, reason, last_error) VALUES ('\''$1'\'', '\''e2e_manual_retry'\'', '\''fixture'\'');"' \
+    sh "$cleanup_worker_key" || fail "cleanup worker fixture enqueue"
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/cleanup_worker 1 || fail "cleanup worker execution"
+cleanup_worker_status=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT status FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$cleanup_worker_key")
+[ "$cleanup_worker_status" = "done" ] || \
+    fail "cleanup worker status: $cleanup_worker_status"
+if curl --silent --fail "$base_url/storage/$cleanup_worker_key" >/dev/null; then
+    fail "cleanup worker did not remove the FastDFS object"
+fi
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$cleanup_worker_key" || fail "cleanup worker fixture database cleanup"
 
 missing_file_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
