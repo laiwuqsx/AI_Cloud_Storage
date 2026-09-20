@@ -47,7 +47,6 @@ static void write_files(const UserFile *files, size_t count)
         if (index > 0) putchar(',');
         fputs("{\"md5\":", stdout); write_json_string(files[index].md5);
         fputs(",\"file_name\":", stdout); write_json_string(files[index].file_name);
-        fputs(",\"url\":", stdout); write_json_string(files[index].url);
         printf(",\"size\":%llu", files[index].size);
         printf(",\"shared_status\":%u", files[index].shared_status);
         fputs(",\"type\":", stdout); write_json_string(files[index].type);

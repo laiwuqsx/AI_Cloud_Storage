@@ -31,6 +31,11 @@ typedef struct {
     unsigned long long size;
 } PublicShare;
 
+typedef struct {
+    char storage_key[257];
+    char file_name[129];
+} DownloadFile;
+
 typedef enum {
     CLAIM_FILE_DATABASE_FAILURE = -1,
     CLAIM_FILE_LINKED = 0,
@@ -102,5 +107,11 @@ int find_active_share(const char *share_id, PublicShare *share);
 
 /* Atomically validates an active share, creates the recipient relation, and increments its reference count. */
 SaveSharedFileResult save_shared_file(const char *user, const char *share_id);
+
+/* Authorizes a private download and increments that user-file row's request counter. */
+int authorize_owned_download(const char *user, const char *md5, DownloadFile *file);
+
+/* Authorizes an active share download and increments that share's request counter. */
+int authorize_share_download(const char *share_id, DownloadFile *file);
 
 #endif

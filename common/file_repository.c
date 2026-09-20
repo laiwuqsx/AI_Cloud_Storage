@@ -924,6 +924,195 @@ SaveSharedFileResult save_shared_file(const char *user, const char *share_id)
     return SAVE_SHARED_FILE_DATABASE_FAILURE;
 }
 
+int authorize_owned_download(const char *user, const char *md5, DownloadFile *file)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *select_stmt = NULL;
+    MYSQL_STMT *update_stmt = NULL;
+    MYSQL_BIND select_param[2], select_result[3], update_param[1];
+    unsigned long user_length, md5_length, lengths[2];
+    my_ulonglong user_file_id = 0;
+    char storage_key[257], file_name[129];
+    const char *select_sql =
+        "SELECT u.id, f.storage_key, u.file_name "
+        "FROM user_file_list u JOIN file_info f ON f.md5 = u.md5 "
+        "WHERE u.user_name = ? AND u.md5 = ? FOR UPDATE";
+    const char *update_sql =
+        "UPDATE user_file_list SET pv = pv + 1 WHERE id = ?";
+    int result = -1;
+
+    if (!user || !md5 || !file) return -1;
+    memset(file, 0, sizeof(*file));
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    user_length = (unsigned long)strlen(user);
+    md5_length = (unsigned long)strlen(md5);
+    select_stmt = mysql_stmt_init(conn);
+    if (!select_stmt ||
+        mysql_stmt_prepare(select_stmt, select_sql,
+                           (unsigned long)strlen(select_sql)) != 0) goto rollback_download;
+    memset(select_param, 0, sizeof(select_param));
+    select_param[0].buffer_type = MYSQL_TYPE_STRING;
+    select_param[0].buffer = (void *)user;
+    select_param[0].length = &user_length;
+    select_param[1].buffer_type = MYSQL_TYPE_STRING;
+    select_param[1].buffer = (void *)md5;
+    select_param[1].length = &md5_length;
+    memset(storage_key, 0, sizeof(storage_key));
+    memset(file_name, 0, sizeof(file_name));
+    memset(select_result, 0, sizeof(select_result));
+    select_result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    select_result[0].buffer = &user_file_id;
+    select_result[0].is_unsigned = 1;
+    select_result[1].buffer_type = MYSQL_TYPE_STRING;
+    select_result[1].buffer = storage_key;
+    select_result[1].buffer_length = sizeof(storage_key) - 1;
+    select_result[1].length = &lengths[0];
+    select_result[2].buffer_type = MYSQL_TYPE_STRING;
+    select_result[2].buffer = file_name;
+    select_result[2].buffer_length = sizeof(file_name) - 1;
+    select_result[2].length = &lengths[1];
+    if (mysql_stmt_bind_param(select_stmt, select_param) != 0 ||
+        mysql_stmt_execute(select_stmt) != 0 ||
+        mysql_stmt_bind_result(select_stmt, select_result) != 0 ||
+        mysql_stmt_store_result(select_stmt) != 0) goto rollback_download;
+    if (mysql_stmt_num_rows(select_stmt) == 0) {
+        result = 1;
+        goto rollback_download;
+    }
+    if (mysql_stmt_fetch(select_stmt) != 0 ||
+        lengths[0] >= sizeof(storage_key) || lengths[1] >= sizeof(file_name))
+        goto rollback_download;
+    storage_key[lengths[0]] = '\0';
+    file_name[lengths[1]] = '\0';
+
+    update_stmt = mysql_stmt_init(conn);
+    if (!update_stmt ||
+        mysql_stmt_prepare(update_stmt, update_sql,
+                           (unsigned long)strlen(update_sql)) != 0) goto rollback_download;
+    memset(update_param, 0, sizeof(update_param));
+    update_param[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    update_param[0].buffer = &user_file_id;
+    update_param[0].is_unsigned = 1;
+    if (mysql_stmt_bind_param(update_stmt, update_param) != 0 ||
+        mysql_stmt_execute(update_stmt) != 0 ||
+        mysql_stmt_affected_rows(update_stmt) != 1 || mysql_commit(conn) != 0)
+        goto rollback_download;
+    memcpy(file->storage_key, storage_key, lengths[0] + 1);
+    memcpy(file->file_name, file_name, lengths[1] + 1);
+    result = 0;
+    goto done;
+
+rollback_download:
+    mysql_rollback(conn);
+done:
+    if (select_stmt) mysql_stmt_close(select_stmt);
+    if (update_stmt) mysql_stmt_close(update_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
+int authorize_share_download(const char *share_id, DownloadFile *file)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *select_stmt = NULL;
+    MYSQL_STMT *update_stmt = NULL;
+    MYSQL_BIND select_param[1], select_result[3], update_param[1];
+    unsigned long share_id_length, lengths[2];
+    my_ulonglong share_row_id = 0;
+    char storage_key[257], file_name[129];
+    const char *select_sql =
+        "SELECT s.id, f.storage_key, u.file_name "
+        "FROM share_file_list s "
+        "JOIN user_file_list u ON u.id = s.user_file_id "
+        "JOIN file_info f ON f.md5 = u.md5 "
+        "WHERE s.share_id = ? "
+        "AND (s.expires_at IS NULL OR s.expires_at > UTC_TIMESTAMP()) FOR UPDATE";
+    const char *update_sql =
+        "UPDATE share_file_list SET pv = pv + 1 WHERE id = ?";
+    int result = -1;
+
+    if (!share_id || !file) return -1;
+    memset(file, 0, sizeof(*file));
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    share_id_length = (unsigned long)strlen(share_id);
+    select_stmt = mysql_stmt_init(conn);
+    if (!select_stmt ||
+        mysql_stmt_prepare(select_stmt, select_sql,
+                           (unsigned long)strlen(select_sql)) != 0) goto rollback_share_download;
+    memset(select_param, 0, sizeof(select_param));
+    select_param[0].buffer_type = MYSQL_TYPE_STRING;
+    select_param[0].buffer = (void *)share_id;
+    select_param[0].length = &share_id_length;
+    memset(storage_key, 0, sizeof(storage_key));
+    memset(file_name, 0, sizeof(file_name));
+    memset(select_result, 0, sizeof(select_result));
+    select_result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    select_result[0].buffer = &share_row_id;
+    select_result[0].is_unsigned = 1;
+    select_result[1].buffer_type = MYSQL_TYPE_STRING;
+    select_result[1].buffer = storage_key;
+    select_result[1].buffer_length = sizeof(storage_key) - 1;
+    select_result[1].length = &lengths[0];
+    select_result[2].buffer_type = MYSQL_TYPE_STRING;
+    select_result[2].buffer = file_name;
+    select_result[2].buffer_length = sizeof(file_name) - 1;
+    select_result[2].length = &lengths[1];
+    if (mysql_stmt_bind_param(select_stmt, select_param) != 0 ||
+        mysql_stmt_execute(select_stmt) != 0 ||
+        mysql_stmt_bind_result(select_stmt, select_result) != 0 ||
+        mysql_stmt_store_result(select_stmt) != 0) goto rollback_share_download;
+    if (mysql_stmt_num_rows(select_stmt) == 0) {
+        result = 1;
+        goto rollback_share_download;
+    }
+    if (mysql_stmt_fetch(select_stmt) != 0 ||
+        lengths[0] >= sizeof(storage_key) || lengths[1] >= sizeof(file_name))
+        goto rollback_share_download;
+    storage_key[lengths[0]] = '\0';
+    file_name[lengths[1]] = '\0';
+
+    update_stmt = mysql_stmt_init(conn);
+    if (!update_stmt ||
+        mysql_stmt_prepare(update_stmt, update_sql,
+                           (unsigned long)strlen(update_sql)) != 0) goto rollback_share_download;
+    memset(update_param, 0, sizeof(update_param));
+    update_param[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    update_param[0].buffer = &share_row_id;
+    update_param[0].is_unsigned = 1;
+    if (mysql_stmt_bind_param(update_stmt, update_param) != 0 ||
+        mysql_stmt_execute(update_stmt) != 0 ||
+        mysql_stmt_affected_rows(update_stmt) != 1 || mysql_commit(conn) != 0)
+        goto rollback_share_download;
+    memcpy(file->storage_key, storage_key, lengths[0] + 1);
+    memcpy(file->file_name, file_name, lengths[1] + 1);
+    result = 0;
+    goto done;
+
+rollback_share_download:
+    mysql_rollback(conn);
+done:
+    if (select_stmt) mysql_stmt_close(select_stmt);
+    if (update_stmt) mysql_stmt_close(update_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
 int list_shared_files(SharedFile *files, size_t capacity, size_t *count)
 {
     MYSQL *conn = NULL;

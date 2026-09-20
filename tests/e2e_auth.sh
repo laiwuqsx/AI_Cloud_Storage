@@ -115,16 +115,9 @@ upload_response=$(curl --silent --show-error --request POST \
     --form "file=@$upload_fixture;filename=fastdfs-e2e.txt;type=text/plain" \
     "$base_url/api/upload")
 case "$upload_response" in
-    *'"code":0'*'"msg":"upload complete"'*'"url":'*) ;;
+    *'"code":0'*'"msg":"upload complete"'*'"download_api":"/api/download"'*) ;;
     *) fail "real FastDFS upload response: $upload_response" ;;
 esac
-
-upload_url=$(printf "%s" "$upload_response" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-[ -n "$upload_url" ] || fail "upload response did not contain a URL"
-curl --silent --show-error --fail "$upload_url" --output "$downloaded_fixture" || \
-    fail "uploaded file URL was not downloadable: $upload_url"
-cmp -s "$upload_fixture" "$downloaded_fixture" || \
-    fail "downloaded FastDFS object differs from uploaded bytes"
 
 upload_db_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.storage_key, CHAR(124), f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f LEFT JOIN user_file_list u ON u.md5 = f.md5 WHERE f.md5 = '\''$1'\'' GROUP BY f.storage_key, f.reference_count;"' \
@@ -132,6 +125,53 @@ upload_db_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
 case "$upload_db_row" in
     group1/M00/*'|1|1') ;;
     *) fail "uploaded file database state: $upload_db_row" ;;
+esac
+upload_storage_key=${upload_db_row%%|*}
+
+curl --silent --show-error --fail --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/download" --output "$downloaded_fixture" || \
+    fail "authenticated private download failed"
+cmp -s "$upload_fixture" "$downloaded_fixture" || \
+    fail "private download differs from uploaded bytes"
+private_download_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT pv FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\'';"' \
+    sh "$upload_md5" "$user_name")
+[ "$private_download_count" = "1" ] || fail "private download count: $private_download_count"
+
+if curl --silent --fail "$base_url/storage/$upload_storage_key" >/dev/null; then
+    fail "direct FastDFS storage URL bypassed download authorization"
+fi
+if curl --silent --fail "$base_url/_internal_storage/$upload_storage_key" >/dev/null; then
+    fail "Nginx internal storage location was externally reachable"
+fi
+
+upload_share_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=share")
+upload_share_id=$(printf "%s" "$upload_share_response" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+[ "${#upload_share_id}" = "64" ] || fail "download share setup: $upload_share_response"
+curl --silent --show-error --fail \
+    "$base_url/api/share/download?share_id=$upload_share_id" \
+    --output "$downloaded_fixture" || fail "active share download failed"
+cmp -s "$upload_fixture" "$downloaded_fixture" || \
+    fail "share download differs from uploaded bytes"
+share_download_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT pv FROM share_file_list WHERE share_id = '\''$1'\'';"' \
+    sh "$upload_share_id")
+[ "$share_download_count" = "1" ] || fail "share download count: $share_download_count"
+upload_unshare_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=unshare")
+case "$upload_unshare_response" in *'"code":0'*) ;; *) fail "download share revoke: $upload_unshare_response" ;; esac
+revoked_download_response=$(curl --silent --show-error \
+    "$base_url/api/share/download?share_id=$upload_share_id")
+case "$revoked_download_response" in
+    *'"code":2'*'"msg":"share unavailable"'*) ;;
+    *) fail "revoked share download response: $revoked_download_response" ;;
 esac
 
 upload_temp_files=$(docker compose -f "$compose_file" exec -T fastcgi_app \
@@ -170,6 +210,15 @@ race_login_b=$(curl --silent --show-error --request POST \
 race_token_b=$(printf "%s" "$race_login_b" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$race_token_b" ] || fail "race user B login response: $race_login_b"
 
+nonowner_download_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/download")
+case "$nonowner_download_response" in
+    *'"code":2'*'"msg":"file unavailable"'*) ;;
+    *) fail "non-owner private download response: $nonowner_download_response" ;;
+esac
+
 physical_files_before=$(docker compose -f "$compose_file" exec -T storage sh -c \
     'find /data/fastdfs/storage/data -type f | wc -l' | tr -d '[:space:]')
 
@@ -196,18 +245,13 @@ wait "$race_pid_b" || fail "race user B upload request failed"
 race_response_a=$(cat "$race_response_file_a")
 race_response_b=$(cat "$race_response_file_b")
 case "$race_response_a" in
-    *'"code":0'*'"url":'*) ;;
+    *'"code":0'*'"download_api":"/api/download"'*) ;;
     *) fail "race user A upload response: $race_response_a" ;;
 esac
 case "$race_response_b" in
-    *'"code":0'*'"url":'*) ;;
+    *'"code":0'*'"download_api":"/api/download"'*) ;;
     *) fail "race user B upload response: $race_response_b" ;;
 esac
-race_url_a=$(printf "%s" "$race_response_a" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-race_url_b=$(printf "%s" "$race_response_b" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-[ -n "$race_url_a" ] && [ "$race_url_a" = "$race_url_b" ] || \
-    fail "concurrent uploads did not converge on one URL: $race_url_a / $race_url_b"
-
 race_db_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f JOIN user_file_list u ON u.md5 = f.md5 WHERE f.md5 = '\''$1'\'' GROUP BY f.reference_count;"' \
     sh "$race_md5")
@@ -232,9 +276,10 @@ case "$cleanup_worker_key" in
     group1/M00/*) ;;
     *) fail "cleanup worker fixture upload: $cleanup_worker_key" ;;
 esac
-curl --silent --show-error --fail \
-    "$base_url/storage/$cleanup_worker_key" >/dev/null || \
-    fail "cleanup worker fixture was not downloadable"
+cleanup_worker_suffix=${cleanup_worker_key#group1/M00/}
+docker compose -f "$compose_file" exec -T storage \
+    test -f "/data/fastdfs/storage/data/$cleanup_worker_suffix" || \
+    fail "cleanup worker fixture was not stored"
 docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO storage_cleanup_job (storage_key, reason, last_error) VALUES ('\''$1'\'', '\''e2e_manual_retry'\'', '\''fixture'\'');"' \
     sh "$cleanup_worker_key" || fail "cleanup worker fixture enqueue"
@@ -245,7 +290,8 @@ cleanup_worker_status=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     sh "$cleanup_worker_key")
 [ "$cleanup_worker_status" = "done" ] || \
     fail "cleanup worker status: $cleanup_worker_status"
-if curl --silent --fail "$base_url/storage/$cleanup_worker_key" >/dev/null; then
+if docker compose -f "$compose_file" exec -T storage \
+    test -f "/data/fastdfs/storage/data/$cleanup_worker_suffix"; then
     fail "cleanup worker did not remove the FastDFS object"
 fi
 docker compose -f "$compose_file" exec -T mysql sh -c \
@@ -295,13 +341,9 @@ verified_dedup_response=$(curl --silent --show-error --request POST \
     --form "file=@$race_fixture;filename=verified-race.txt;type=text/plain" \
     "$base_url/api/upload")
 case "$verified_dedup_response" in
-    *'"code":0'*'"url":'*) ;;
+    *'"code":0'*'"download_api":"/api/download"'*) ;;
     *) fail "verified dedup upload response: $verified_dedup_response" ;;
 esac
-verified_dedup_url=$(printf "%s" "$verified_dedup_response" | \
-    sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-[ "$verified_dedup_url" = "$race_url_a" ] || \
-    fail "verified upload did not reuse existing URL: $verified_dedup_url / $race_url_a"
 verified_dedup_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f LEFT JOIN user_file_list u ON u.md5 = f.md5 AND u.user_name = '\''$2'\'' WHERE f.md5 = '\''$1'\'' GROUP BY f.reference_count;"' \
     sh "$race_md5" "$user_name")
@@ -370,7 +412,7 @@ files_response=$(curl --silent --show-error --request POST \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
     "$base_url/api/myfiles")
 case "$files_response" in
-    *'"file_name":"shared-demo.txt","url":'*'"shared_status":1'*) ;;
+    *'"file_name":"shared-demo.txt"'*'"shared_status":1'*) ;;
     *) fail "file list response: $files_response" ;;
 esac
 
@@ -413,7 +455,7 @@ files_after_expiry=$(curl --silent --show-error --request POST \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
     "$base_url/api/myfiles")
 case "$files_after_expiry" in
-    *'"file_name":"shared-demo.txt","url":'*'"shared_status":0'*) ;;
+    *'"file_name":"shared-demo.txt"'*'"shared_status":0'*) ;;
     *) fail "file list after share expiry: $files_after_expiry" ;;
 esac
 
@@ -521,7 +563,7 @@ files_after_unshare=$(curl --silent --show-error --request POST \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
     "$base_url/api/myfiles")
 case "$files_after_unshare" in
-    *'"file_name":"shared-demo.txt","url":'*'"shared_status":0'*) ;;
+    *'"file_name":"shared-demo.txt"'*'"shared_status":0'*) ;;
     *) fail "file list after unshare: $files_after_unshare" ;;
 esac
 
@@ -612,6 +654,40 @@ case "$cancel_save_response" in
     *) fail "concurrent save/cancel response: $cancel_save_response" ;;
 esac
 
+download_save_share=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=share")
+download_save_share_id=$(printf "%s" "$download_save_share" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+[ "${#download_save_share_id}" = "64" ] || fail "saved download share setup: $download_save_share"
+download_save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$download_save_share_id\"}" \
+    "$base_url/api/share/save")
+case "$download_save_response" in *'"code":0'*'"msg":"file saved"'*) ;; *) fail "saved download transfer: $download_save_response" ;; esac
+download_save_unshare=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=unshare")
+case "$download_save_unshare" in *'"code":0'*) ;; *) fail "saved download unshare: $download_save_unshare" ;; esac
+download_save_owner_delete=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=del")
+case "$download_save_owner_delete" in *'"code":0'*) ;; *) fail "saved download owner delete: $download_save_owner_delete" ;; esac
+
+curl --silent --show-error --fail --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/download" --output "$downloaded_fixture" || \
+    fail "recipient private download failed after owner delete"
+cmp -s "$upload_fixture" "$downloaded_fixture" || \
+    fail "recipient download changed after owner delete"
+saved_download_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$upload_md5" "$race_user_a")
+[ "$saved_download_state" = "1|1" ] || fail "recipient download ownership state: $saved_download_state"
+
 logout_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
@@ -632,6 +708,15 @@ files_after_logout=$(curl --silent --show-error --request POST \
 case "$files_after_logout" in
     *'"code":4'*) ;;
     *) fail "old token accepted after logout: $files_after_logout" ;;
+esac
+
+download_after_logout=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$race_md5\"}" \
+    "$base_url/api/download")
+case "$download_after_logout" in
+    *'"code":4'*'"msg":"token error"'*) ;;
+    *) fail "old token accepted for download: $download_after_logout" ;;
 esac
 
 duplicate_logout_response=$(curl --silent --show-error --request POST \

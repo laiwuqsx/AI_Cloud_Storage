@@ -70,6 +70,6 @@ RUN make all integration-tools && mkdir -p /app/logs
 COPY docker/fastcgi_app/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-EXPOSE 10000 10001 10002 10003 10004 10005 10006 10007
+EXPOSE 10000 10001 10002 10003 10004 10005 10006 10007 10008
 
 CMD ["/app/start.sh"]

@@ -142,11 +142,11 @@ static void file_type_from_name(const char *file_name, char output[33])
     output[length] = '\0';
 }
 
-static void write_upload_success(const StoredObject *stored)
+static void write_upload_success(void)
 {
     write_json_header();
-    printf("{\"code\":0,\"msg\":\"upload complete\",\"url\":\"%s\"}\n",
-           stored->url);
+    printf("{\"code\":0,\"msg\":\"upload complete\","
+           "\"download_api\":\"/api/download\"}\n");
 }
 
 static void write_workflow_error(FirstUploadResult result)
@@ -261,7 +261,7 @@ static void handle_upload_request(void)
         fprintf(stderr, "upload temporary file cleanup failed\n");
     }
     if (upload_result == FIRST_UPLOAD_OK) {
-        write_upload_success(&stored);
+        write_upload_success();
     } else {
         write_workflow_error(upload_result);
     }
