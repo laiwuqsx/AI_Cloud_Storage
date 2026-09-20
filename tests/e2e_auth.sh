@@ -82,6 +82,14 @@ if [ "$share_id_column_count" = "0" ]; then
         < sql/migrations/002_share_links.sql || fail "share links migration"
 fi
 
+share_code_column_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''share_file_list'\'' AND column_name = '\''access_code_hash'\'';"')
+if [ "$share_code_column_count" = "0" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/003_share_access_code.sql || fail "share access code migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -173,6 +181,62 @@ case "$revoked_download_response" in
     *'"code":2'*'"msg":"share unavailable"'*) ;;
     *) fail "revoked share download response: $revoked_download_response" ;;
 esac
+
+invalid_code_share=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\",\"access_code\":\"1234567890123\"}" \
+    "$base_url/api/dealfile?cmd=share")
+case "$invalid_code_share" in
+    *'"code":3'*'invalid share access code'*) ;;
+    *) fail "oversized share code was not rejected: $invalid_code_share" ;;
+esac
+
+protected_share_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\",\"access_code\":\"A7b9\"}" \
+    "$base_url/api/dealfile?cmd=share")
+protected_share_id=$(printf "%s" "$protected_share_response" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+case "$protected_share_response" in
+    *'"code":0'*'"requires_code":true'*) ;;
+    *) fail "protected share setup: $protected_share_response" ;;
+esac
+[ "${#protected_share_id}" = "64" ] || fail "protected share id: $protected_share_id"
+protected_hash_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(LENGTH(access_code_salt), CHAR(124), LENGTH(access_code_hash), CHAR(124), access_code_hash = '\''A7b9'\'') FROM share_file_list WHERE share_id = '\''$1'\'';"' \
+    sh "$protected_share_id")
+[ "$protected_hash_state" = "32|64|0" ] || fail "protected share digest state: $protected_hash_state"
+protected_metadata=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$protected_share_id")
+case "$protected_metadata" in *'"requires_code":true'*) ;; *) fail "protected share metadata: $protected_metadata" ;; esac
+protected_missing_code=$(curl --silent --show-error \
+    "$base_url/api/share/download?share_id=$protected_share_id")
+case "$protected_missing_code" in *'"code":7'*'required'*) ;; *) fail "missing share code: $protected_missing_code" ;; esac
+protected_wrong_code=$(curl --silent --show-error --header "X-Share-Code: B7b9" \
+    "$base_url/api/share/download?share_id=$protected_share_id")
+case "$protected_wrong_code" in *'"code":7'*'invalid'*) ;; *) fail "wrong share code: $protected_wrong_code" ;; esac
+curl --silent --show-error --fail --header "X-Share-Code: A7b9" \
+    "$base_url/api/share/download?share_id=$protected_share_id" \
+    --output "$downloaded_fixture" || fail "protected share download failed"
+cmp -s "$upload_fixture" "$downloaded_fixture" || fail "protected share download bytes"
+
+attempt=1
+while [ "$attempt" -le 5 ]; do
+    protected_rate_response=$(curl --silent --show-error --header "X-Share-Code: C7b9" \
+        "$base_url/api/share/download?share_id=$protected_share_id")
+    attempt=$((attempt + 1))
+done
+case "$protected_rate_response" in
+    *'"code":8'*'too many'*) ;;
+    *) fail "share code rate limit: $protected_rate_response" ;;
+esac
+protected_locked_correct=$(curl --silent --show-error --header "X-Share-Code: A7b9" \
+    "$base_url/api/share/download?share_id=$protected_share_id")
+case "$protected_locked_correct" in *'"code":8'*) ;; *) fail "rate limit bypass: $protected_locked_correct" ;; esac
+protected_unshare_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    "$base_url/api/dealfile?cmd=unshare")
+case "$protected_unshare_response" in *'"code":0'*) ;; *) fail "protected share revoke: $protected_unshare_response" ;; esac
 
 upload_temp_files=$(docker compose -f "$compose_file" exec -T fastcgi_app \
     find /tmp -maxdepth 1 -name 'ai-cloud-upload-*' -print)
@@ -656,13 +720,18 @@ esac
 
 download_save_share=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
-    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\"}" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$upload_md5\",\"access_code\":\"Save9\"}" \
     "$base_url/api/dealfile?cmd=share")
 download_save_share_id=$(printf "%s" "$download_save_share" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
 [ "${#download_save_share_id}" = "64" ] || fail "saved download share setup: $download_save_share"
-download_save_response=$(curl --silent --show-error --request POST \
+download_save_missing_code=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$download_save_share_id\"}" \
+    "$base_url/api/share/save")
+case "$download_save_missing_code" in *'"code":7'*'required'*) ;; *) fail "protected save without code: $download_save_missing_code" ;; esac
+download_save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$download_save_share_id\",\"access_code\":\"Save9\"}" \
     "$base_url/api/share/save")
 case "$download_save_response" in *'"code":0'*'"msg":"file saved"'*) ;; *) fail "saved download transfer: $download_save_response" ;; esac
 download_save_unshare=$(curl --silent --show-error --request POST \

@@ -53,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     libfcgi-dev \
     libhiredis-dev \
+    libssl-dev \
     spawn-fcgi \
     && rm -rf /var/lib/apt/lists/*
 

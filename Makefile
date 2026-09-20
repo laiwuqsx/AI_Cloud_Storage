@@ -6,6 +6,9 @@ BIN_DIR := bin_cgi
 COMMON := common/json_util.c common/http_response.c common/runtime_config.c
 MYSQL_LIBS := -lmysqlclient
 REDIS_LIBS := -lhiredis
+OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
+CRYPTO_CFLAGS := $(if $(OPENSSL_PREFIX),-I$(OPENSSL_PREFIX)/include)
+CRYPTO_LIBS := $(if $(OPENSSL_PREFIX),-L$(OPENSSL_PREFIX)/lib) -lcrypto
 
 .PHONY: all integration-tools test e2e clean
 
@@ -23,8 +26,8 @@ $(BIN_DIR)/myfiles: src_cgi/myfiles_cgi.c $(COMMON) common/md5.c common/user_val
 $(BIN_DIR)/md5: src_cgi/md5_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/share_id.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
+$(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/share_id.c common/share_code.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
 $(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(REDIS_LIBS)
@@ -32,11 +35,11 @@ $(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/md5.c common/user_valid
 $(BIN_DIR)/upload: src_cgi/upload_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/cleanup_repository.c common/upload_intake.c common/multipart_upload.c common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
+$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
-$(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
+$(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
 integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker
 
@@ -70,9 +73,11 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_multipart_tests
 	$(CC) $(CFLAGS) tests/test_share_id.c common/share_id.c -o /tmp/ai_cloud_storage_share_id_tests
 	/tmp/ai_cloud_storage_share_id_tests
+	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) tests/test_share_code.c common/share_code.c -o /tmp/ai_cloud_storage_share_code_tests $(CRYPTO_LIBS)
+	/tmp/ai_cloud_storage_share_code_tests
 
 e2e:
 	sh tests/e2e_auth.sh
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_share_code_tests

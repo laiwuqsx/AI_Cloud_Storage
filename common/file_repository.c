@@ -471,14 +471,16 @@ done:
 }
 
 int share_user_file(const char *user, const char *md5, const char *share_id,
-                    unsigned int expires_in_seconds)
+                    unsigned int expires_in_seconds, const char *access_code_salt,
+                    const char *access_code_hash)
 {
     MYSQL *conn = NULL;
     MYSQL_STMT *expired_stmt = NULL;
     MYSQL_STMT *share_stmt = NULL;
     MYSQL_STMT *status_stmt = NULL;
-    MYSQL_BIND expired_bind[2], share_bind[4], status_bind[2];
+    MYSQL_BIND expired_bind[2], share_bind[6], status_bind[2];
     unsigned long user_length, md5_length, share_id_length;
+    unsigned long access_code_salt_length, access_code_hash_length;
     const char *expired_sql =
         "DELETE s FROM share_file_list s "
         "JOIN user_file_list u ON u.id = s.user_file_id "
@@ -486,14 +488,19 @@ int share_user_file(const char *user, const char *md5, const char *share_id,
         "AND s.expires_at IS NOT NULL AND s.expires_at <= UTC_TIMESTAMP()";
     const char *share_sql =
         "INSERT INTO share_file_list "
-        "(user_file_id, user_name, md5, file_name, share_id, expires_at) "
-        "SELECT id, user_name, md5, file_name, ?, "
+        "(user_file_id, user_name, md5, file_name, share_id, access_code_salt, "
+        "access_code_hash, expires_at) "
+        "SELECT id, user_name, md5, file_name, ?, NULLIF(?, ''), NULLIF(?, ''), "
         "TIMESTAMPADD(SECOND, ?, UTC_TIMESTAMP()) "
         "FROM user_file_list WHERE user_name = ? AND md5 = ?";
     const char *status_sql = "UPDATE user_file_list SET shared_status = 1 WHERE user_name = ? AND md5 = ?";
     int result = -1;
 
-    if (!user || !md5 || !share_id || strlen(share_id) != 64 || expires_in_seconds == 0) return -1;
+    if (!user || !md5 || !share_id || !access_code_salt || !access_code_hash ||
+        strlen(share_id) != 64 || expires_in_seconds == 0 ||
+        ((access_code_salt[0] == '\0') != (access_code_hash[0] == '\0')) ||
+        (access_code_salt[0] != '\0' &&
+         (strlen(access_code_salt) != 32 || strlen(access_code_hash) != 64))) return -1;
     conn = mysql_init(NULL);
     if (!conn) goto done;
     if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
@@ -506,6 +513,8 @@ int share_user_file(const char *user, const char *md5, const char *share_id,
     user_length = (unsigned long)strlen(user);
     md5_length = (unsigned long)strlen(md5);
     share_id_length = (unsigned long)strlen(share_id);
+    access_code_salt_length = (unsigned long)strlen(access_code_salt);
+    access_code_hash_length = (unsigned long)strlen(access_code_hash);
 
     expired_stmt = mysql_stmt_init(conn);
     if (!expired_stmt ||
@@ -525,12 +534,16 @@ int share_user_file(const char *user, const char *md5, const char *share_id,
     memset(share_bind, 0, sizeof(share_bind));
     share_bind[0].buffer_type = MYSQL_TYPE_STRING;
     share_bind[0].buffer = (void *)share_id; share_bind[0].length = &share_id_length;
-    share_bind[1].buffer_type = MYSQL_TYPE_LONG;
-    share_bind[1].buffer = &expires_in_seconds; share_bind[1].is_unsigned = 1;
+    share_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    share_bind[1].buffer = (void *)access_code_salt; share_bind[1].length = &access_code_salt_length;
     share_bind[2].buffer_type = MYSQL_TYPE_STRING;
-    share_bind[2].buffer = (void *)user; share_bind[2].length = &user_length;
-    share_bind[3].buffer_type = MYSQL_TYPE_STRING;
-    share_bind[3].buffer = (void *)md5; share_bind[3].length = &md5_length;
+    share_bind[2].buffer = (void *)access_code_hash; share_bind[2].length = &access_code_hash_length;
+    share_bind[3].buffer_type = MYSQL_TYPE_LONG;
+    share_bind[3].buffer = &expires_in_seconds; share_bind[3].is_unsigned = 1;
+    share_bind[4].buffer_type = MYSQL_TYPE_STRING;
+    share_bind[4].buffer = (void *)user; share_bind[4].length = &user_length;
+    share_bind[5].buffer_type = MYSQL_TYPE_STRING;
+    share_bind[5].buffer = (void *)md5; share_bind[5].length = &md5_length;
     if (mysql_stmt_bind_param(share_stmt, share_bind) != 0) goto rollback_share;
     if (mysql_stmt_execute(share_stmt) != 0) {
         if (mysql_stmt_errno(share_stmt) == 1062) result = 2;
@@ -631,14 +644,16 @@ int find_active_share(const char *share_id, PublicShare *share)
 {
     MYSQL *conn = NULL;
     MYSQL_STMT *stmt = NULL;
-    MYSQL_BIND parameter[1], result_bind[4];
+    MYSQL_BIND parameter[1], result_bind[5];
     unsigned long share_id_length, lengths[3];
     char file_name[129], type[33], expires_at[32];
     my_ulonglong size = 0;
+    signed char requires_code = 0;
     int fetch_result;
     const char *sql =
         "SELECT u.file_name, f.size, f.type, "
-        "COALESCE(DATE_FORMAT(s.expires_at, '%Y-%m-%d %H:%i:%s'), 'never') "
+        "COALESCE(DATE_FORMAT(s.expires_at, '%Y-%m-%d %H:%i:%s'), 'never'), "
+        "(s.access_code_hash IS NOT NULL) "
         "FROM share_file_list s "
         "JOIN user_file_list u ON u.id = s.user_file_id "
         "JOIN file_info f ON f.md5 = u.md5 "
@@ -681,6 +696,8 @@ int find_active_share(const char *share_id, PublicShare *share)
     result_bind[3].buffer_type = MYSQL_TYPE_STRING;
     result_bind[3].buffer = expires_at; result_bind[3].buffer_length = sizeof(expires_at) - 1;
     result_bind[3].length = &lengths[2];
+    result_bind[4].buffer_type = MYSQL_TYPE_TINY;
+    result_bind[4].buffer = &requires_code;
     if (mysql_stmt_bind_result(stmt, result_bind) != 0) goto done;
 
     fetch_result = mysql_stmt_fetch(stmt);
@@ -696,6 +713,71 @@ int find_active_share(const char *share_id, PublicShare *share)
     memcpy(share->type, type, lengths[1] + 1);
     memcpy(share->expires_at, expires_at, lengths[2] + 1);
     share->size = size;
+    share->requires_code = requires_code ? 1 : 0;
+    result = 0;
+
+done:
+    if (stmt) mysql_stmt_close(stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
+int find_share_access_policy(const char *share_id, ShareAccessPolicy *policy)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND parameter[1], result_bind[2];
+    unsigned long share_id_length, lengths[2];
+    char salt[33], hash[65];
+    int fetch_result;
+    const char *sql =
+        "SELECT COALESCE(access_code_salt, ''), COALESCE(access_code_hash, '') "
+        "FROM share_file_list WHERE share_id = ? "
+        "AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) LIMIT 1";
+    int result = -1;
+
+    if (!share_id || !policy || strlen(share_id) != 64) return -1;
+    memset(policy, 0, sizeof(*policy));
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) goto done;
+    stmt = mysql_stmt_init(conn);
+    if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
+    share_id_length = (unsigned long)strlen(share_id);
+    memset(parameter, 0, sizeof(parameter));
+    parameter[0].buffer_type = MYSQL_TYPE_STRING;
+    parameter[0].buffer = (void *)share_id;
+    parameter[0].length = &share_id_length;
+    if (mysql_stmt_bind_param(stmt, parameter) != 0 || mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_store_result(stmt) != 0) goto done;
+    memset(salt, 0, sizeof(salt));
+    memset(hash, 0, sizeof(hash));
+    memset(result_bind, 0, sizeof(result_bind));
+    result_bind[0].buffer_type = MYSQL_TYPE_STRING;
+    result_bind[0].buffer = salt;
+    result_bind[0].buffer_length = sizeof(salt) - 1;
+    result_bind[0].length = &lengths[0];
+    result_bind[1].buffer_type = MYSQL_TYPE_STRING;
+    result_bind[1].buffer = hash;
+    result_bind[1].buffer_length = sizeof(hash) - 1;
+    result_bind[1].length = &lengths[1];
+    if (mysql_stmt_bind_result(stmt, result_bind) != 0) goto done;
+    fetch_result = mysql_stmt_fetch(stmt);
+    if (fetch_result == MYSQL_NO_DATA) {
+        result = 1;
+        goto done;
+    }
+    if (fetch_result != 0 || lengths[0] >= sizeof(salt) || lengths[1] >= sizeof(hash)) goto done;
+    salt[lengths[0]] = '\0';
+    hash[lengths[1]] = '\0';
+    if ((lengths[0] == 0) != (lengths[1] == 0)) goto done;
+    memcpy(policy->salt, salt, lengths[0] + 1);
+    memcpy(policy->hash, hash, lengths[1] + 1);
+    policy->requires_code = lengths[0] > 0 ? 1 : 0;
     result = 0;
 
 done:

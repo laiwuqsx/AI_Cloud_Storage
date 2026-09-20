@@ -29,7 +29,14 @@ typedef struct {
     char type[33];
     char expires_at[32];
     unsigned long long size;
+    unsigned char requires_code;
 } PublicShare;
+
+typedef struct {
+    char salt[33];
+    char hash[65];
+    unsigned char requires_code;
+} ShareAccessPolicy;
 
 typedef struct {
     char storage_key[257];
@@ -97,13 +104,17 @@ int remove_user_file(const char *user, const char *md5);
 
 /* 0: shared, 1: user-file relationship does not exist, 2: already shared, -1: database failure. */
 int share_user_file(const char *user, const char *md5, const char *share_id,
-                    unsigned int expires_in_seconds);
+                    unsigned int expires_in_seconds, const char *access_code_salt,
+                    const char *access_code_hash);
 
 /* 0: sharing cancelled, 1: file is not shared by this user, -1: database failure. */
 int unshare_user_file(const char *user, const char *md5);
 
 /* 0: active share found, 1: missing/revoked/expired, -1: database failure. */
 int find_active_share(const char *share_id, PublicShare *share);
+
+/* Returns the optional access-code digest for an active share without exposing it publicly. */
+int find_share_access_policy(const char *share_id, ShareAccessPolicy *policy);
 
 /* Atomically validates an active share, creates the recipient relation, and increments its reference count. */
 SaveSharedFileResult save_shared_file(const char *user, const char *share_id);

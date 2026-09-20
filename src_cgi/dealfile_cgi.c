@@ -9,6 +9,7 @@
 #include "http_response.h"
 #include "json_util.h"
 #include "runtime_config.h"
+#include "share_code.h"
 #include "share_id.h"
 #include "token_service.h"
 #include "user_validation.h"
@@ -64,6 +65,8 @@ int main(void)
 {
     char body[MAX_BODY_SIZE], user[33], token[65], md5[33];
     char share_id[SHARE_ID_HEX_LENGTH + 1];
+    char access_code[MAX_BODY_SIZE], access_code_salt[SHARE_CODE_SALT_HEX_LENGTH + 1];
+    char access_code_hash[SHARE_CODE_HASH_HEX_LENGTH + 1];
     unsigned int share_ttl = DEFAULT_SHARE_TTL_SECONDS;
     int result, command;
 
@@ -100,16 +103,31 @@ int main(void)
                 write_json_response(1, "database error", NULL);
             }
         } else if (command == 2) {
+            access_code[0] = '\0';
+            access_code_salt[0] = '\0';
+            access_code_hash[0] = '\0';
+            if (json_get_string(body, "access_code", access_code,
+                                sizeof(access_code)) == 0) {
+                if (!validate_share_code(access_code) ||
+                    create_share_code_digest(access_code, access_code_salt,
+                                             access_code_hash) != 0) {
+                    write_json_response(3, "invalid share access code", NULL);
+                    continue;
+                }
+            }
             if (get_share_ttl(&share_ttl) != 0 || generate_share_id(share_id) != 0) {
                 write_json_response(1, "share configuration error", NULL);
                 continue;
             }
-            result = share_user_file(user, md5, share_id, share_ttl);
+            result = share_user_file(user, md5, share_id, share_ttl,
+                                     access_code_salt, access_code_hash);
             if (result == 0) {
                 write_json_header();
                 printf("{\"code\":0,\"msg\":\"file shared\","
-                       "\"share_id\":\"%s\",\"expires_in\":%u}\n",
-                       share_id, share_ttl);
+                       "\"share_id\":\"%s\",\"expires_in\":%u,"
+                       "\"requires_code\":%s}\n",
+                       share_id, share_ttl,
+                       access_code_salt[0] ? "true" : "false");
             } else if (result == 1) {
                 write_json_response(1, "file not found in user list", NULL);
             } else if (result == 2) {

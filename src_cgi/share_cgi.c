@@ -8,6 +8,7 @@
 #include "http_response.h"
 #include "json_util.h"
 #include "runtime_config.h"
+#include "share_access_service.h"
 #include "share_id.h"
 #include "token_service.h"
 #include "user_validation.h"
@@ -72,7 +73,19 @@ static void write_share(const PublicShare *share)
     write_json_string(share->type);
     fputs(",\"expires_at\":", stdout);
     write_json_string(share->expires_at);
+    printf(",\"requires_code\":%s", share->requires_code ? "true" : "false");
     fputs("}\n", stdout);
+}
+
+static int write_access_error(ShareAccessResult result)
+{
+    if (result == SHARE_ACCESS_GRANTED) return 0;
+    if (result == SHARE_ACCESS_UNAVAILABLE) write_json_response(2, "share unavailable", NULL);
+    else if (result == SHARE_ACCESS_CODE_REQUIRED) write_json_response(7, "share access code required", NULL);
+    else if (result == SHARE_ACCESS_CODE_INVALID) write_json_response(7, "invalid share access code", NULL);
+    else if (result == SHARE_ACCESS_RATE_LIMITED) write_json_response(8, "too many access code attempts", NULL);
+    else write_json_response(6, "share access verification error", NULL);
+    return -1;
 }
 
 static void handle_public_share(void)
@@ -99,7 +112,9 @@ static void handle_save_share(void)
 {
     char body[MAX_BODY_SIZE];
     char user[33], token[65], share_id[SHARE_ID_HEX_LENGTH + 1];
+    char access_code[MAX_BODY_SIZE];
     SaveSharedFileResult result;
+    ShareAccessResult access_result;
 
     if (read_body(body, sizeof(body)) != 0 ||
         json_get_string(body, "user", user, sizeof(user)) != 0 ||
@@ -113,6 +128,10 @@ static void handle_save_share(void)
         write_json_response(4, "token error", NULL);
         return;
     }
+    access_code[0] = '\0';
+    json_get_string(body, "access_code", access_code, sizeof(access_code));
+    access_result = authorize_share_access(share_id, access_code, user);
+    if (write_access_error(access_result) != 0) return;
     result = save_shared_file(user, share_id);
     if (result == SAVE_SHARED_FILE_SAVED) {
         write_json_response(0, "file saved", NULL);

@@ -9,6 +9,7 @@
 #include "http_response.h"
 #include "json_util.h"
 #include "runtime_config.h"
+#include "share_access_service.h"
 #include "share_id.h"
 #include "token_service.h"
 #include "user_validation.h"
@@ -104,11 +105,35 @@ static void handle_owned_download(void)
 static void handle_share_download(void)
 {
     char share_id[SHARE_ID_HEX_LENGTH + 1];
+    const char *access_code = getenv("HTTP_X_SHARE_CODE");
+    const char *actor = getenv("REMOTE_ADDR");
     DownloadFile file;
+    ShareAccessResult access_result;
     int result;
 
     if (get_share_id(getenv("QUERY_STRING"), share_id) != 0) {
         write_json_response(3, "invalid share download request", NULL);
+        return;
+    }
+    access_result = authorize_share_access(share_id, access_code, actor);
+    if (access_result == SHARE_ACCESS_UNAVAILABLE) {
+        write_json_response(2, "share unavailable", NULL);
+        return;
+    }
+    if (access_result == SHARE_ACCESS_CODE_REQUIRED) {
+        write_json_response(7, "share access code required", NULL);
+        return;
+    }
+    if (access_result == SHARE_ACCESS_CODE_INVALID) {
+        write_json_response(7, "invalid share access code", NULL);
+        return;
+    }
+    if (access_result == SHARE_ACCESS_RATE_LIMITED) {
+        write_json_response(8, "too many access code attempts", NULL);
+        return;
+    }
+    if (access_result != SHARE_ACCESS_GRANTED) {
+        write_json_response(6, "share access verification error", NULL);
         return;
     }
     result = authorize_share_download(share_id, &file);

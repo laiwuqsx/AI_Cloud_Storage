@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS share_file_list (
   md5 CHAR(32) NOT NULL,
   file_name VARCHAR(128) NOT NULL,
   share_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  access_code_salt CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  access_code_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   expires_at TIMESTAMP NULL DEFAULT NULL,
   pv INT UNSIGNED NOT NULL DEFAULT 0,
   create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
