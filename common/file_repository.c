@@ -238,6 +238,46 @@ done:
     return result;
 }
 
+int user_owns_file(const char *user, const char *md5)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *stmt = NULL;
+    MYSQL_BIND bind[2];
+    unsigned long user_length, md5_length;
+    const char *sql =
+        "SELECT 1 FROM user_file_list WHERE user_name = ? AND md5 = ? LIMIT 1";
+    int result = -1;
+
+    if (!user || !md5) return -1;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) goto done;
+    stmt = mysql_stmt_init(conn);
+    if (!stmt || mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) goto done;
+
+    memset(bind, 0, sizeof(bind));
+    user_length = (unsigned long)strlen(user);
+    md5_length = (unsigned long)strlen(md5);
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = (void *)user;
+    bind[0].length = &user_length;
+    bind[1].buffer_type = MYSQL_TYPE_STRING;
+    bind[1].buffer = (void *)md5;
+    bind[1].length = &md5_length;
+    if (mysql_stmt_bind_param(stmt, bind) != 0 || mysql_stmt_execute(stmt) != 0 ||
+        mysql_stmt_store_result(stmt) != 0) goto done;
+    result = mysql_stmt_num_rows(stmt) == 1 ? 1 : 0;
+
+done:
+    if (stmt) mysql_stmt_close(stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
 ClaimFileResult claim_existing_file_with_location(const char *user, const char *md5,
                                                   const char *file_name,
                                                   FileLocation *location)

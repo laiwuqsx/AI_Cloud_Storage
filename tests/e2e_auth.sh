@@ -242,7 +242,7 @@ missing_file_response=$(curl --silent --show-error --request POST \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$missing_md5\",\"file_name\":\"missing-demo.txt\"}" \
     "$base_url/api/md5")
 case "$missing_file_response" in
-    *'"code":1'*'"msg":"physical file not found"'*) ;;
+    *'"code":1'*'"msg":"verified upload required"'*) ;;
     *) fail "missing physical file response: $missing_file_response" ;;
 esac
 
@@ -255,17 +255,60 @@ case "$invalid_md5_response" in
     *) fail "invalid instant upload request response: $invalid_md5_response" ;;
 esac
 
-docker compose -f "$compose_file" exec -T mysql sh -c \
-    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO file_info (md5, storage_key, url, size, type) VALUES ('\''aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\'', '\''demo/shared-demo.txt'\'', '\''http://storage.local/shared-demo.txt'\'', 42, '\''txt'\'') ON DUPLICATE KEY UPDATE url = VALUES(url);"'
-
-instant_upload_response=$(curl --silent --show-error --request POST \
+unauthorized_md5_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
-    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\",\"file_name\":\"shared-demo.txt\"}" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$race_md5\",\"file_name\":\"stolen-race.txt\"}" \
     "$base_url/api/md5")
-case "$instant_upload_response" in
-    *'"code":0'*) ;;
-    *) fail "instant upload response: $instant_upload_response" ;;
+case "$unauthorized_md5_response" in
+    *'"code":1'*'"msg":"verified upload required"'*) ;;
+    *) fail "cross-user MD5 preflight response: $unauthorized_md5_response" ;;
 esac
+
+unauthorized_md5_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f LEFT JOIN user_file_list u ON u.md5 = f.md5 AND u.user_name = '\''$2'\'' WHERE f.md5 = '\''$1'\'' GROUP BY f.reference_count;"' \
+    sh "$race_md5" "$user_name")
+[ "$unauthorized_md5_state" = "2|0" ] || \
+    fail "cross-user MD5 request changed ownership: $unauthorized_md5_state"
+
+verified_dedup_files_before=$(docker compose -f "$compose_file" exec -T storage sh -c \
+    'find /data/fastdfs/storage/data -type f | wc -l' | tr -d '[:space:]')
+verified_dedup_response=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Upload-MD5: $race_md5" \
+    --header "X-Upload-Size: $race_size" \
+    --form "file=@$race_fixture;filename=verified-race.txt;type=text/plain" \
+    "$base_url/api/upload")
+case "$verified_dedup_response" in
+    *'"code":0'*'"url":'*) ;;
+    *) fail "verified dedup upload response: $verified_dedup_response" ;;
+esac
+verified_dedup_url=$(printf "%s" "$verified_dedup_response" | \
+    sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+[ "$verified_dedup_url" = "$race_url_a" ] || \
+    fail "verified upload did not reuse existing URL: $verified_dedup_url / $race_url_a"
+verified_dedup_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(f.reference_count, CHAR(124), COUNT(u.id)) FROM file_info f LEFT JOIN user_file_list u ON u.md5 = f.md5 AND u.user_name = '\''$2'\'' WHERE f.md5 = '\''$1'\'' GROUP BY f.reference_count;"' \
+    sh "$race_md5" "$user_name")
+[ "$verified_dedup_state" = "3|1" ] || \
+    fail "verified dedup database state: $verified_dedup_state"
+verified_dedup_files_after=$(docker compose -f "$compose_file" exec -T storage sh -c \
+    'find /data/fastdfs/storage/data -type f | wc -l' | tr -d '[:space:]')
+[ "$verified_dedup_files_after" -eq "$verified_dedup_files_before" ] || \
+    fail "verified dedup left a duplicate physical object"
+
+owned_md5_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$race_md5\",\"file_name\":\"verified-race.txt\"}" \
+    "$base_url/api/md5")
+case "$owned_md5_response" in
+    *'"code":5'*'"msg":"user already owns this file"'*) ;;
+    *) fail "owned MD5 preflight response: $owned_md5_response" ;;
+esac
+
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM share_file_list WHERE md5 = '\''$1'\''; DELETE FROM user_file_list WHERE md5 = '\''$1'\''; DELETE FROM file_info WHERE md5 = '\''$1'\''; INSERT INTO file_info (md5, storage_key, url, size, type, reference_count) VALUES ('\''$1'\'', '\''demo/shared-demo.txt'\'', '\''http://storage.local/shared-demo.txt'\'', 42, '\''txt'\'', 1); INSERT INTO user_file_list (user_name, md5, file_name) VALUES ('\''$2'\'', '\''$1'\'', '\''shared-demo.txt'\'');"' \
+    sh "$shared_md5" "$user_name" || fail "shared file fixture setup"
 
 share_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \

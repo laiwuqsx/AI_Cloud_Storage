@@ -13,7 +13,6 @@
 #define MAX_BODY_SIZE 4096
 
 enum {
-    MD5_RESPONSE_OK = 0,
     MD5_RESPONSE_NEEDS_UPLOAD = 1,
     MD5_RESPONSE_INVALID_REQUEST = 3,
     MD5_RESPONSE_TOKEN_ERROR = 4,
@@ -34,7 +33,7 @@ static int read_body(char *body, size_t size)
 int main(void)
 {
     char body[MAX_BODY_SIZE], user[33], token[65], md5[33], file_name[129];
-    ClaimFileResult result;
+    int ownership;
 
     runtime_config_init();
     while (FCGI_Accept() >= 0) {
@@ -53,13 +52,12 @@ int main(void)
             continue;
         }
 
-        result = claim_existing_file(user, md5, file_name);
-        if (result == CLAIM_FILE_LINKED) {
-            write_json_response(MD5_RESPONSE_OK, "instant upload complete", NULL);
-        } else if (result == CLAIM_FILE_PHYSICAL_MISSING) {
-            write_json_response(MD5_RESPONSE_NEEDS_UPLOAD, "physical file not found", NULL);
-        } else if (result == CLAIM_FILE_ALREADY_OWNED) {
+        ownership = user_owns_file(user, md5);
+        if (ownership == 1) {
             write_json_response(MD5_RESPONSE_ALREADY_OWNED, "user already owns this file", NULL);
+        } else if (ownership == 0) {
+            /* A global MD5 is not proof that this user may access another user's file. */
+            write_json_response(MD5_RESPONSE_NEEDS_UPLOAD, "verified upload required", NULL);
         } else {
             write_json_response(MD5_RESPONSE_DATABASE_ERROR, "database error", NULL);
         }

@@ -58,7 +58,7 @@ int main(int argc, char **argv)
     NewFileRecord record;
     RecordNewFileResult first_result, duplicate_result;
     char storage_key[128], url[256];
-    int verified, confirmed, wrong_key_absent;
+    int verified, confirmed, wrong_key_absent, owner_found, stranger_absent;
 
     if (argc != 3 || strlen(argv[1]) > 32 || strlen(argv[2]) != 32) return 2;
     snprintf(storage_key, sizeof(storage_key), "probe/%s", argv[2]);
@@ -75,13 +75,18 @@ int main(int argc, char **argv)
     duplicate_result = record_new_file_upload(&record);
     confirmed = confirm_new_file_upload(record.user_name, record.md5, record.storage_key);
     wrong_key_absent = confirm_new_file_upload(record.user_name, record.md5, "probe/wrong-key");
+    owner_found = user_owns_file(record.user_name, record.md5);
+    stranger_absent = user_owns_file("probe_stranger", record.md5);
     verified = verify_and_cleanup(record.user_name, record.md5, record.storage_key);
     if (first_result != RECORD_NEW_FILE_CREATED ||
         duplicate_result != RECORD_NEW_FILE_PHYSICAL_CONFLICT ||
-        confirmed != 1 || wrong_key_absent != 0 || !verified) {
+        confirmed != 1 || wrong_key_absent != 0 || owner_found != 1 ||
+        stranger_absent != 0 || !verified) {
         fprintf(stderr,
-                "upload repository probe failed: first=%d duplicate=%d confirmed=%d absent=%d verified=%d\n",
-                first_result, duplicate_result, confirmed, wrong_key_absent, verified);
+                "upload repository probe failed: first=%d duplicate=%d confirmed=%d "
+                "absent=%d owner=%d stranger=%d verified=%d\n",
+                first_result, duplicate_result, confirmed, wrong_key_absent,
+                owner_found, stranger_absent, verified);
         return 1;
     }
     puts("upload repository probe passed");

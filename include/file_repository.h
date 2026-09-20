@@ -63,6 +63,9 @@ RecordNewFileResult record_new_file_upload(const NewFileRecord *record);
 /* 1: exact committed file and owner rows exist, 0: absent, -1: database failure. */
 int confirm_new_file_upload(const char *user_name, const char *md5, const char *storage_key);
 
+/* 1: the user owns this logical file, 0: not owned, -1: database failure. */
+int user_owns_file(const char *user, const char *md5);
+
 ClaimFileResult claim_existing_file(const char *user, const char *md5, const char *file_name);
 
 /* Same atomic claim operation, also returning the already committed physical object. */
