@@ -10,16 +10,23 @@ password_md5="5f4dcc3b5aa765d61d8327deb882cf99"
 wrong_password_md5="900150983cd24fb0d6963f7d28e17f72"
 shared_md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 missing_md5="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+share_race_md5="cccccccccccccccccccccccccccccccc"
 transaction_md5=$(printf "%032d" "$(date +%s)")
 upload_fixture=$(mktemp)
 downloaded_fixture=$(mktemp)
 race_fixture=$(mktemp)
 race_response_file_a=$(mktemp)
 race_response_file_b=$(mktemp)
+save_response_file_a=$(mktemp)
+save_response_file_b=$(mktemp)
+cancel_response_file=$(mktemp)
+cancel_save_response_file=$(mktemp)
 
 cleanup() {
     rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" \
-        "$race_response_file_a" "$race_response_file_b"
+        "$race_response_file_a" "$race_response_file_b" \
+        "$save_response_file_a" "$save_response_file_b" \
+        "$cancel_response_file" "$cancel_save_response_file"
 }
 
 trap cleanup EXIT HUP INT TERM
@@ -387,6 +394,20 @@ case "$expired_share_response" in
     *) fail "expired share response: $expired_share_response" ;;
 esac
 
+expired_save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$share_id\"}" \
+    "$base_url/api/share/save")
+case "$expired_save_response" in
+    *'"code":2'*'"msg":"share unavailable"'*) ;;
+    *) fail "expired share save response: $expired_save_response" ;;
+esac
+expired_save_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$shared_md5" "$race_user_a")
+[ "$expired_save_state" = "1|0" ] || \
+    fail "expired share save changed ownership: $expired_save_state"
+
 files_after_expiry=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
@@ -422,6 +443,54 @@ case "$new_public_share" in
     *) fail "new public share response: $new_public_share" ;;
 esac
 
+save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$new_share_id\"}" \
+    "$base_url/api/share/save")
+case "$save_response" in
+    *'"code":0'*'"msg":"file saved"'*) ;;
+    *) fail "save shared file response: $save_response" ;;
+esac
+
+duplicate_save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$new_share_id\"}" \
+    "$base_url/api/share/save")
+case "$duplicate_save_response" in
+    *'"code":0'*'"msg":"file already saved"'*) ;;
+    *) fail "duplicate save response: $duplicate_save_response" ;;
+esac
+
+save_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\'' AND file_name = '\''shared-demo.txt'\'' AND shared_status = 0)) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$shared_md5" "$race_user_a")
+[ "$save_state" = "2|1" ] || fail "saved share database state: $save_state"
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/share_save_probe "$race_user_b" "$new_share_id" \
+    > "$save_response_file_a" &
+save_pid_a=$!
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/share_save_probe "$race_user_b" "$new_share_id" \
+    > "$save_response_file_b" &
+save_pid_b=$!
+wait "$save_pid_a" || fail "concurrent save A request failed"
+wait "$save_pid_b" || fail "concurrent save B request failed"
+concurrent_save_a=$(cat "$save_response_file_a")
+concurrent_save_b=$(cat "$save_response_file_b")
+if [ "$concurrent_save_a" != "saved" ] && [ "$concurrent_save_b" != "saved" ]; then
+    fail "concurrent save did not create relation: $concurrent_save_a / $concurrent_save_b"
+fi
+if [ "$concurrent_save_a" != "already_saved" ] && [ "$concurrent_save_b" != "already_saved" ]; then
+    fail "concurrent save was not idempotent: $concurrent_save_a / $concurrent_save_b"
+fi
+
+concurrent_save_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$shared_md5")
+[ "$concurrent_save_state" = "3|3" ] || \
+    fail "concurrent save database state: $concurrent_save_state"
+
 unshare_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
@@ -436,6 +505,15 @@ revoked_share_response=$(curl --silent --show-error \
 case "$revoked_share_response" in
     *'"code":2'*'"msg":"share unavailable"'*) ;;
     *) fail "revoked share response: $revoked_share_response" ;;
+esac
+
+revoked_save_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$new_share_id\"}" \
+    "$base_url/api/share/save")
+case "$revoked_save_response" in
+    *'"code":2'*'"msg":"share unavailable"'*) ;;
+    *) fail "revoked share save response: $revoked_save_response" ;;
 esac
 
 files_after_unshare=$(curl --silent --show-error --request POST \
@@ -482,6 +560,56 @@ case "$files_after_delete" in
     *"\"md5\":\"$shared_md5\""*) fail "deleted shared file is still listed: $files_after_delete" ;;
     *"\"md5\":\"$upload_md5\""*) ;;
     *) fail "real uploaded file missing after unrelated delete: $files_after_delete" ;;
+esac
+
+recipient_files_after_owner_delete=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\"}" \
+    "$base_url/api/myfiles")
+case "$recipient_files_after_owner_delete" in
+    *"\"md5\":\"$shared_md5\""*'"file_name":"shared-demo.txt"'*'"shared_status":0'*) ;;
+    *) fail "recipient lost saved file after owner delete: $recipient_files_after_owner_delete" ;;
+esac
+saved_file_after_owner_delete=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$shared_md5")
+[ "$saved_file_after_owner_delete" = "2|2" ] || \
+    fail "saved file reference state after owner delete: $saved_file_after_owner_delete"
+
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM share_file_list WHERE md5 = '\''$1'\''; DELETE FROM user_file_list WHERE md5 = '\''$1'\''; DELETE FROM file_info WHERE md5 = '\''$1'\''; INSERT INTO file_info (md5, storage_key, url, size, type, reference_count) VALUES ('\''$1'\'', '\''demo/share-race.txt'\'', '\''http://storage.local/share-race.txt'\'', 24, '\''txt'\'', 1); INSERT INTO user_file_list (user_name, md5, file_name) VALUES ('\''$2'\'', '\''$1'\'', '\''share-race.txt'\'');"' \
+    sh "$share_race_md5" "$user_name" || fail "share save/cancel race fixture setup"
+
+share_race_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$share_race_md5\"}" \
+    "$base_url/api/dealfile?cmd=share")
+share_race_id=$(printf "%s" "$share_race_response" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+[ "${#share_race_id}" = "64" ] || fail "share save/cancel race setup: $share_race_response"
+
+curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"share_id\":\"$share_race_id\"}" \
+    "$base_url/api/share/save" > "$cancel_save_response_file" &
+cancel_save_pid=$!
+curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$share_race_md5\"}" \
+    "$base_url/api/dealfile?cmd=unshare" > "$cancel_response_file" &
+cancel_pid=$!
+wait "$cancel_save_pid" || fail "concurrent share save request failed"
+wait "$cancel_pid" || fail "concurrent share cancel request failed"
+cancel_save_response=$(cat "$cancel_save_response_file")
+cancel_response=$(cat "$cancel_response_file")
+case "$cancel_response" in *'"code":0'*) ;; *) fail "concurrent cancel response: $cancel_response" ;; esac
+
+share_race_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT((SELECT COUNT(*) FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\''), CHAR(124), reference_count, CHAR(124), (SELECT COUNT(*) FROM share_file_list WHERE md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$share_race_md5" "$race_user_a")
+case "$cancel_save_response" in
+    *'"code":0'*) [ "$share_race_state" = "1|2|0" ] || fail "save-first race state: $share_race_state" ;;
+    *'"code":2'*) [ "$share_race_state" = "0|1|0" ] || fail "cancel-first race state: $share_race_state" ;;
+    *) fail "concurrent save/cancel response: $cancel_save_response" ;;
 esac
 
 logout_response=$(curl --silent --show-error --request POST \

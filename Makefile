@@ -32,15 +32,18 @@ $(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/md5.c common/user_valid
 $(BIN_DIR)/upload: src_cgi/upload_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/cleanup_repository.c common/upload_intake.c common/multipart_upload.c common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) common/file_repository.c common/share_id.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS)
+$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/cleanup_worker
+integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker
 
 $(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c common/file_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_repository_probe: tests/cleanup_repository_probe.c common/cleanup_repository.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
+
+$(BIN_DIR)/share_save_probe: tests/share_save_probe.c common/file_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)

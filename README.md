@@ -10,7 +10,7 @@
 Nginx -> C FastCGI -> MySQL / Redis
 ```
 
-已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传与下载、逻辑删除，以及可撤销、可过期的随机分享链接。分享转存、分享下载、提取码、大文件分片上传、前端和 FAISS 检索仍在后续阶段。
+已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传与下载、逻辑删除、可撤销/可过期的随机分享链接，以及登录后转存。分享下载、提取码、大文件分片上传、前端和 FAISS 检索仍在后续阶段。
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交。两个用户同时上传相同内容时，由 `file_info.md5` 唯一约束裁决胜者；失败方删除自己多上传的 FastDFS 对象，再以事务关联胜出的物理文件并增加引用数。两个请求最终返回同一个 URL。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
@@ -21,6 +21,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数和 `pending/running/done` 状态；手动 worker 会领取任务、重试删除，并将中断超过五分钟的 running 任务重新排队。已有数据库需要先执行 `sql/migrations/001_storage_cleanup_job.sql`。
 
 文件分享会生成 32 字节安全随机数编码成的 64 位十六进制 `share_id`，默认七天过期（可通过 `SHARE_TTL_SECONDS` 调整）。公开查询只返回文件名、大小、类型和过期时间，不暴露 MD5、FastDFS storage_key 或存储直链；取消分享或过期后旧链接立即不可查询，重新分享会生成新 ID。已有数据库需要执行 `sql/migrations/002_share_links.sql`。
+
+登录用户可通过有效 `share_id` 把文件保存到自己的文件列表。事务会依次锁定分享记录、所有者逻辑文件和物理文件记录，再插入接收者的 `user_file_list` 并原子增加 `reference_count`。重复或并发重复转存返回成功但不会重复计数；转存与撤销并发时，以谁先取得分享记录锁为准，已经完成的转存不会因之后撤销而消失。
 
 FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。Docker 镜像从官方源码构建固定版本的 FastDFS 及其依赖，开发栈启动一个 tracker 和一个 storage。
 
@@ -73,6 +75,7 @@ make test
 - POST /api/dealfile?cmd=del：携带 user、Token、md5，删除当前用户的文件关联。
 - POST /api/dealfile?cmd=share：携带 user、Token、md5，创建当前用户的限时分享并返回 `share_id` 和 `expires_in`。
 - GET /api/share?share_id=&lt;64位ID&gt;：匿名查看有效分享的最小文件元数据；撤销、过期或未知链接返回 `code=2`。
+- POST /api/share/save：携带 `user`、Token 和 `share_id`，把仍有效的分享转存到当前用户；重复转存幂等成功。
 - POST /api/dealfile?cmd=unshare：携带 user、Token、md5，撤销当前分享；旧 `share_id` 不会复活。
 - POST /api/logout：携带 user 和当前 Token，删除该 Redis 会话；重复请求仍返回成功。
 
@@ -82,7 +85,7 @@ Docker 守护进程运行后，在项目根目录执行：
 
     make e2e
 
-测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、下载内容校验、上传事务入库、两个用户并发上传相同内容、跨用户 MD5 认领拒绝、真实字节验证后的物理去重、文件列表、分享创建与公开查看、过期、重新分享、撤销、删除和退出登录。测试会确认公开分享不泄露存储地址或 MD5，旧分享 ID 不会在重新分享后复活。
+测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、下载内容校验、上传事务入库、两个用户并发上传相同内容、跨用户 MD5 认领拒绝、真实字节验证后的物理去重、文件列表、分享创建与公开查看、过期、转存、并发重复转存、转存/撤销竞争、重新分享、撤销、删除和退出登录。测试会直接检查用户文件关系和引用数，确认原作者撤销或删除自己的关系后，接收者已转存的文件仍然有效。
 
 手动处理最多 100 个待清理 FastDFS 对象：
 

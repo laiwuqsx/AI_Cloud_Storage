@@ -61,6 +61,13 @@ typedef enum {
     RECORD_NEW_FILE_PHYSICAL_CONFLICT = 1
 } RecordNewFileResult;
 
+typedef enum {
+    SAVE_SHARED_FILE_DATABASE_FAILURE = -1,
+    SAVE_SHARED_FILE_SAVED = 0,
+    SAVE_SHARED_FILE_UNAVAILABLE = 1,
+    SAVE_SHARED_FILE_ALREADY_OWNED = 2
+} SaveSharedFileResult;
+
 /* 0: success, -1: database failure. */
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count);
 
@@ -92,5 +99,8 @@ int unshare_user_file(const char *user, const char *md5);
 
 /* 0: active share found, 1: missing/revoked/expired, -1: database failure. */
 int find_active_share(const char *share_id, PublicShare *share);
+
+/* Atomically validates an active share, creates the recipient relation, and increments its reference count. */
+SaveSharedFileResult save_shared_file(const char *user, const char *share_id);
 
 #endif

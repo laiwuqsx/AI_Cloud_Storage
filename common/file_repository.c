@@ -704,6 +704,226 @@ done:
     return result;
 }
 
+static void mark_retryable_transaction_error(MYSQL *conn, MYSQL_STMT *stmt,
+                                             int *retryable)
+{
+    unsigned int error_code = stmt ? mysql_stmt_errno(stmt) : 0;
+
+    if (error_code == 0 && conn) error_code = mysql_errno(conn);
+    if (retryable && (error_code == 1205 || error_code == 1213)) *retryable = 1;
+}
+
+static SaveSharedFileResult save_shared_file_once(const char *user,
+                                                  const char *share_id,
+                                                  int *retryable)
+{
+    MYSQL *conn = NULL;
+    MYSQL_STMT *share_stmt = NULL;
+    MYSQL_STMT *owner_stmt = NULL;
+    MYSQL_STMT *file_stmt = NULL;
+    MYSQL_STMT *insert_stmt = NULL;
+    MYSQL_STMT *increment_stmt = NULL;
+    MYSQL_BIND share_param[1], share_result[1];
+    MYSQL_BIND owner_param[1], owner_result[2];
+    MYSQL_BIND file_param[1], file_result[1];
+    MYSQL_BIND insert_param[3], increment_param[1];
+    unsigned long share_id_length, user_length, md5_length, file_name_length;
+    unsigned long owner_lengths[2];
+    my_ulonglong owner_file_id = 0;
+    unsigned int file_marker = 0;
+    char md5[33], file_name[129];
+    const char *share_sql =
+        "SELECT user_file_id FROM share_file_list "
+        "WHERE share_id = ? "
+        "AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) FOR UPDATE";
+    const char *owner_sql =
+        "SELECT md5, file_name FROM user_file_list WHERE id = ? FOR UPDATE";
+    const char *file_sql = "SELECT 1 FROM file_info WHERE md5 = ? FOR UPDATE";
+    const char *insert_sql =
+        "INSERT INTO user_file_list (user_name, md5, file_name, shared_status) "
+        "VALUES (?, ?, ?, 0)";
+    const char *increment_sql =
+        "UPDATE file_info SET reference_count = reference_count + 1 WHERE md5 = ?";
+    SaveSharedFileResult result = SAVE_SHARED_FILE_DATABASE_FAILURE;
+
+    if (retryable) *retryable = 0;
+    conn = mysql_init(NULL);
+    if (!conn) goto done;
+    if (!mysql_real_connect(conn, runtime_config_get("MYSQL_HOST", "127.0.0.1"),
+                            runtime_config_get("MYSQL_USER", "root"),
+                            runtime_config_get("MYSQL_PASSWORD", ""),
+                            runtime_config_get("MYSQL_DATABASE", "ai_cloud_storage"),
+                            3306, NULL, 0)) goto done;
+    if (mysql_autocommit(conn, 0) != 0) goto done;
+
+    share_id_length = (unsigned long)strlen(share_id);
+    share_stmt = mysql_stmt_init(conn);
+    if (!share_stmt ||
+        mysql_stmt_prepare(share_stmt, share_sql, (unsigned long)strlen(share_sql)) != 0) {
+        mark_retryable_transaction_error(conn, share_stmt, retryable);
+        goto rollback;
+    }
+    memset(share_param, 0, sizeof(share_param));
+    share_param[0].buffer_type = MYSQL_TYPE_STRING;
+    share_param[0].buffer = (void *)share_id;
+    share_param[0].length = &share_id_length;
+    memset(share_result, 0, sizeof(share_result));
+    share_result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    share_result[0].buffer = &owner_file_id;
+    share_result[0].is_unsigned = 1;
+    if (mysql_stmt_bind_param(share_stmt, share_param) != 0 ||
+        mysql_stmt_execute(share_stmt) != 0 ||
+        mysql_stmt_bind_result(share_stmt, share_result) != 0 ||
+        mysql_stmt_store_result(share_stmt) != 0) {
+        mark_retryable_transaction_error(conn, share_stmt, retryable);
+        goto rollback;
+    }
+    if (mysql_stmt_num_rows(share_stmt) == 0) {
+        result = SAVE_SHARED_FILE_UNAVAILABLE;
+        goto rollback;
+    }
+    if (mysql_stmt_fetch(share_stmt) != 0) {
+        mark_retryable_transaction_error(conn, share_stmt, retryable);
+        goto rollback;
+    }
+
+    owner_stmt = mysql_stmt_init(conn);
+    if (!owner_stmt ||
+        mysql_stmt_prepare(owner_stmt, owner_sql, (unsigned long)strlen(owner_sql)) != 0) {
+        mark_retryable_transaction_error(conn, owner_stmt, retryable);
+        goto rollback;
+    }
+    memset(owner_param, 0, sizeof(owner_param));
+    owner_param[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    owner_param[0].buffer = &owner_file_id;
+    owner_param[0].is_unsigned = 1;
+    memset(md5, 0, sizeof(md5));
+    memset(file_name, 0, sizeof(file_name));
+    memset(owner_result, 0, sizeof(owner_result));
+    owner_result[0].buffer_type = MYSQL_TYPE_STRING;
+    owner_result[0].buffer = md5;
+    owner_result[0].buffer_length = sizeof(md5) - 1;
+    owner_result[0].length = &owner_lengths[0];
+    owner_result[1].buffer_type = MYSQL_TYPE_STRING;
+    owner_result[1].buffer = file_name;
+    owner_result[1].buffer_length = sizeof(file_name) - 1;
+    owner_result[1].length = &owner_lengths[1];
+    if (mysql_stmt_bind_param(owner_stmt, owner_param) != 0 ||
+        mysql_stmt_execute(owner_stmt) != 0 ||
+        mysql_stmt_bind_result(owner_stmt, owner_result) != 0 ||
+        mysql_stmt_store_result(owner_stmt) != 0 ||
+        mysql_stmt_num_rows(owner_stmt) != 1 ||
+        mysql_stmt_fetch(owner_stmt) != 0 ||
+        owner_lengths[0] >= sizeof(md5) || owner_lengths[1] >= sizeof(file_name)) {
+        mark_retryable_transaction_error(conn, owner_stmt, retryable);
+        goto rollback;
+    }
+    md5[owner_lengths[0]] = '\0';
+    file_name[owner_lengths[1]] = '\0';
+    md5_length = owner_lengths[0];
+    file_name_length = owner_lengths[1];
+
+    file_stmt = mysql_stmt_init(conn);
+    if (!file_stmt ||
+        mysql_stmt_prepare(file_stmt, file_sql, (unsigned long)strlen(file_sql)) != 0) {
+        mark_retryable_transaction_error(conn, file_stmt, retryable);
+        goto rollback;
+    }
+    memset(file_param, 0, sizeof(file_param));
+    file_param[0].buffer_type = MYSQL_TYPE_STRING;
+    file_param[0].buffer = md5;
+    file_param[0].length = &md5_length;
+    memset(file_result, 0, sizeof(file_result));
+    file_result[0].buffer_type = MYSQL_TYPE_LONG;
+    file_result[0].buffer = &file_marker;
+    file_result[0].is_unsigned = 1;
+    if (mysql_stmt_bind_param(file_stmt, file_param) != 0 ||
+        mysql_stmt_execute(file_stmt) != 0 ||
+        mysql_stmt_bind_result(file_stmt, file_result) != 0 ||
+        mysql_stmt_store_result(file_stmt) != 0 ||
+        mysql_stmt_num_rows(file_stmt) != 1 || mysql_stmt_fetch(file_stmt) != 0) {
+        mark_retryable_transaction_error(conn, file_stmt, retryable);
+        goto rollback;
+    }
+
+    user_length = (unsigned long)strlen(user);
+    insert_stmt = mysql_stmt_init(conn);
+    if (!insert_stmt ||
+        mysql_stmt_prepare(insert_stmt, insert_sql, (unsigned long)strlen(insert_sql)) != 0) {
+        mark_retryable_transaction_error(conn, insert_stmt, retryable);
+        goto rollback;
+    }
+    memset(insert_param, 0, sizeof(insert_param));
+    insert_param[0].buffer_type = MYSQL_TYPE_STRING;
+    insert_param[0].buffer = (void *)user;
+    insert_param[0].length = &user_length;
+    insert_param[1].buffer_type = MYSQL_TYPE_STRING;
+    insert_param[1].buffer = md5;
+    insert_param[1].length = &md5_length;
+    insert_param[2].buffer_type = MYSQL_TYPE_STRING;
+    insert_param[2].buffer = file_name;
+    insert_param[2].length = &file_name_length;
+    if (mysql_stmt_bind_param(insert_stmt, insert_param) != 0) {
+        mark_retryable_transaction_error(conn, insert_stmt, retryable);
+        goto rollback;
+    }
+    if (mysql_stmt_execute(insert_stmt) != 0) {
+        if (mysql_stmt_errno(insert_stmt) == 1062) {
+            result = SAVE_SHARED_FILE_ALREADY_OWNED;
+        } else {
+            mark_retryable_transaction_error(conn, insert_stmt, retryable);
+        }
+        goto rollback;
+    }
+
+    increment_stmt = mysql_stmt_init(conn);
+    if (!increment_stmt ||
+        mysql_stmt_prepare(increment_stmt, increment_sql,
+                           (unsigned long)strlen(increment_sql)) != 0) {
+        mark_retryable_transaction_error(conn, increment_stmt, retryable);
+        goto rollback;
+    }
+    memset(increment_param, 0, sizeof(increment_param));
+    increment_param[0].buffer_type = MYSQL_TYPE_STRING;
+    increment_param[0].buffer = md5;
+    increment_param[0].length = &md5_length;
+    if (mysql_stmt_bind_param(increment_stmt, increment_param) != 0 ||
+        mysql_stmt_execute(increment_stmt) != 0 ||
+        mysql_stmt_affected_rows(increment_stmt) != 1) {
+        mark_retryable_transaction_error(conn, increment_stmt, retryable);
+        goto rollback;
+    }
+    if (mysql_commit(conn) != 0) goto rollback;
+    result = SAVE_SHARED_FILE_SAVED;
+    goto done;
+
+rollback:
+    mysql_rollback(conn);
+done:
+    if (share_stmt) mysql_stmt_close(share_stmt);
+    if (owner_stmt) mysql_stmt_close(owner_stmt);
+    if (file_stmt) mysql_stmt_close(file_stmt);
+    if (insert_stmt) mysql_stmt_close(insert_stmt);
+    if (increment_stmt) mysql_stmt_close(increment_stmt);
+    if (conn) mysql_close(conn);
+    return result;
+}
+
+SaveSharedFileResult save_shared_file(const char *user, const char *share_id)
+{
+    SaveSharedFileResult result;
+    int attempt;
+    int retryable = 0;
+
+    if (!user || strlen(user) == 0 || strlen(user) > 32 ||
+        !share_id || strlen(share_id) != 64) return SAVE_SHARED_FILE_DATABASE_FAILURE;
+    for (attempt = 0; attempt < 3; ++attempt) {
+        result = save_shared_file_once(user, share_id, &retryable);
+        if (result != SAVE_SHARED_FILE_DATABASE_FAILURE || !retryable) return result;
+    }
+    return SAVE_SHARED_FILE_DATABASE_FAILURE;
+}
+
 int list_shared_files(SharedFile *files, size_t capacity, size_t *count)
 {
     MYSQL *conn = NULL;
