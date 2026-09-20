@@ -63,6 +63,7 @@ COPY common ./common
 COPY include ./include
 COPY src_cgi ./src_cgi
 COPY tests ./tests
+COPY tools ./tools
 
 RUN make all integration-tools && mkdir -p /app/logs
 

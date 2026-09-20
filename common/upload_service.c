@@ -12,10 +12,14 @@ static int valid_request(const FirstUploadRequest *request)
 }
 
 static FirstUploadResult remove_uploaded_object(const StorageClient *storage,
+                                                const UploadRepository *repository,
                                                 const StoredObject *stored,
+                                                const char *reason,
                                                 FirstUploadResult result_after_cleanup)
 {
     if (storage_client_remove(storage, stored->storage_key) != 0) {
+        repository->schedule_cleanup(repository->context, stored->storage_key,
+                                     reason, "FastDFS delete command failed");
         return FIRST_UPLOAD_CLEANUP_FAILED;
     }
     return result_after_cleanup;
@@ -32,7 +36,8 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
     int confirmation;
 
     if (!storage || !repository || !repository->record || !repository->confirm ||
-        !repository->claim_existing || !valid_request(request)) {
+        !repository->claim_existing || !repository->schedule_cleanup ||
+        !valid_request(request)) {
         return FIRST_UPLOAD_INVALID_ARGUMENT;
     }
     if (storage_client_upload(storage, request->local_path, &uploaded) != 0) {
@@ -56,9 +61,11 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
         StoredObject existing;
         ClaimFileResult claim_result;
 
-        if (storage_client_remove(storage, uploaded.storage_key) != 0) {
-            return FIRST_UPLOAD_CLEANUP_FAILED;
-        }
+        FirstUploadResult cleanup_result = remove_uploaded_object(
+            storage, repository, &uploaded, "concurrent_upload_duplicate",
+            FIRST_UPLOAD_PHYSICAL_CONFLICT);
+
+        if (cleanup_result == FIRST_UPLOAD_CLEANUP_FAILED) return cleanup_result;
         claim_result = repository->claim_existing(
             repository->context, request->user_name, request->md5,
             request->file_name, &existing);
@@ -70,7 +77,9 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
         return FIRST_UPLOAD_DATABASE_FAILED;
     }
     if (record_result != RECORD_NEW_FILE_COMMIT_UNKNOWN) {
-        return remove_uploaded_object(storage, &uploaded, FIRST_UPLOAD_DATABASE_FAILED);
+        return remove_uploaded_object(storage, repository, &uploaded,
+                                      "upload_database_failure",
+                                      FIRST_UPLOAD_DATABASE_FAILED);
     }
 
     confirmation = repository->confirm(repository->context, request->user_name,
@@ -80,7 +89,9 @@ FirstUploadResult execute_first_upload(const StorageClient *storage,
         return FIRST_UPLOAD_OK;
     }
     if (confirmation == 0) {
-        return remove_uploaded_object(storage, &uploaded, FIRST_UPLOAD_DATABASE_FAILED);
+        return remove_uploaded_object(storage, repository, &uploaded,
+                                      "commit_confirmed_absent",
+                                      FIRST_UPLOAD_DATABASE_FAILED);
     }
 
     /* The object may already be referenced by committed rows, so deleting it is unsafe. */

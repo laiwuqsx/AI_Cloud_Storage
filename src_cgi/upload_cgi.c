@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "fastdfs_storage_client.h"
+#include "cleanup_repository.h"
 #include "file_repository.h"
 #include "http_response.h"
 #include "multipart_upload.h"
@@ -110,6 +111,19 @@ static ClaimFileResult repository_claim_existing(void *unused, const char *user_
     return result;
 }
 
+static int repository_schedule_cleanup(void *unused, const char *storage_key,
+                                       const char *reason, const char *last_error)
+{
+    int result;
+
+    (void)unused;
+    result = enqueue_storage_cleanup(storage_key, reason, last_error);
+    if (result != 0) {
+        fprintf(stderr, "unable to persist storage cleanup for %s\n", storage_key);
+    }
+    return result;
+}
+
 static void file_type_from_name(const char *file_name, char output[33])
 {
     const char *dot = strrchr(file_name, '.');
@@ -181,10 +195,11 @@ static void handle_upload_request(void)
     FastDfsStorageContext fastdfs_context;
     StorageClient storage;
     UploadRepository repository = {
-        NULL,
-        repository_record,
-        repository_confirm,
-        repository_claim_existing
+        .context = NULL,
+        .record = repository_record,
+        .confirm = repository_confirm,
+        .claim_existing = repository_claim_existing,
+        .schedule_cleanup = repository_schedule_cleanup
     };
     FirstUploadRequest request;
     StoredObject stored;

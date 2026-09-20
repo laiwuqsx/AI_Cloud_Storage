@@ -3,3 +3,4 @@ bin_cgi/
 logs/
 .DS_Store
 LOCAL_PROJECT_PLAN.md
+/docs/PROJECT_GUIDE.md

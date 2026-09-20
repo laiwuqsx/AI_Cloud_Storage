@@ -16,6 +16,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。这些异常分支已用假存储覆盖；Docker 开发栈也已接入真实 FastDFS 服务。
 
+若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数和 `pending/running/done` 状态；手动 worker 会领取任务、重试删除，并将中断超过五分钟的 running 任务重新排队。已有数据库需要先执行 `sql/migrations/001_storage_cleanup_job.sql`。
+
 FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upload_file` 和 `fdfs_delete_file`，检查子进程状态，校验返回的 storage_key，并根据公开基础地址生成 URL。命令参数不经过 Shell 拼接。Docker 镜像从官方源码构建固定版本的 FastDFS 及其依赖，开发栈启动一个 tracker 和一个 storage。
 
 文件接收层使用 `mkstemp` 创建权限受限的随机临时文件，并在分块写入时增量计算服务端 MD5、累计真实字节数和执行大小限制。声明大小或 MD5 不一致、写入失败、请求超限时会立即删除临时文件；成功后再把临时路径移交给存储层。该模块不使用用户文件名作为本地路径，也不需要把完整文件加载进内存。
@@ -76,3 +78,8 @@ Docker 守护进程运行后，在项目根目录执行：
     make e2e
 
 测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、下载内容校验、上传事务入库、两个用户并发上传相同内容、重复物理对象清理、秒传、文件列表、分享、取消分享、删除和退出登录。退出后会检查 Redis key 已删除、旧 Token 被拒绝，并验证重复退出可安全重试。
+
+手动处理最多 100 个待清理 FastDFS 对象：
+
+    docker compose -f docker/docker-compose.yml exec -T fastcgi_app \
+      /app/bin_cgi/cleanup_worker 100
