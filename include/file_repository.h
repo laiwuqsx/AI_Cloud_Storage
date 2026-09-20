@@ -24,6 +24,13 @@ typedef struct {
     unsigned long pv;
 } SharedFile;
 
+typedef struct {
+    char file_name[129];
+    char type[33];
+    char expires_at[32];
+    unsigned long long size;
+} PublicShare;
+
 typedef enum {
     CLAIM_FILE_DATABASE_FAILURE = -1,
     CLAIM_FILE_LINKED = 0,
@@ -77,9 +84,13 @@ ClaimFileResult claim_existing_file_with_location(const char *user, const char *
 int remove_user_file(const char *user, const char *md5);
 
 /* 0: shared, 1: user-file relationship does not exist, 2: already shared, -1: database failure. */
-int share_user_file(const char *user, const char *md5);
+int share_user_file(const char *user, const char *md5, const char *share_id,
+                    unsigned int expires_in_seconds);
 
 /* 0: sharing cancelled, 1: file is not shared by this user, -1: database failure. */
 int unshare_user_file(const char *user, const char *md5);
+
+/* 0: active share found, 1: missing/revoked/expired, -1: database failure. */
+int find_active_share(const char *share_id, PublicShare *share);
 
 #endif

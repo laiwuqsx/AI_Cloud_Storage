@@ -40,13 +40,20 @@ CREATE TABLE IF NOT EXISTS user_file_list (
 
 CREATE TABLE IF NOT EXISTS share_file_list (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_file_id BIGINT NOT NULL,
   user_name VARCHAR(32) NOT NULL,
   md5 CHAR(32) NOT NULL,
   file_name VARCHAR(128) NOT NULL,
+  share_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  expires_at TIMESTAMP NULL DEFAULT NULL,
   pv INT UNSIGNED NOT NULL DEFAULT 0,
   create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_share_user_file_id (user_file_id),
+  UNIQUE KEY uq_share_id (share_id),
   UNIQUE KEY uq_shared_user_file (user_name, md5),
   KEY idx_share_created_at (create_time),
+  CONSTRAINT fk_share_user_file FOREIGN KEY (user_file_id)
+    REFERENCES user_file_list(id) ON DELETE CASCADE,
   CONSTRAINT fk_share_file_info FOREIGN KEY (md5)
     REFERENCES file_info(md5) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

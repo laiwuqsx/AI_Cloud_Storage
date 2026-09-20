@@ -67,6 +67,14 @@ docker compose -f "$compose_file" exec -T mysql sh -c \
     < sql/migrations/001_storage_cleanup_job.sql || \
     fail "storage cleanup migration"
 
+share_id_column_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''share_file_list'\'' AND column_name = '\''share_id'\'';"')
+if [ "$share_id_column_count" = "0" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/002_share_links.sql || fail "share links migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -315,8 +323,39 @@ share_response=$(curl --silent --show-error --request POST \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
     "$base_url/api/dealfile?cmd=share")
 case "$share_response" in
-    *'"code":0'*) ;;
+    *'"code":0'*'"share_id":'*'"expires_in":'*) ;;
     *) fail "share response: $share_response" ;;
+esac
+share_id=$(printf "%s" "$share_response" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+share_id_length=$(printf "%s" "$share_id" | wc -c | tr -d '[:space:]')
+[ "$share_id_length" = "64" ] || fail "share id length: $share_id"
+case "$share_id" in
+    *[!0-9a-f]*) fail "share id format: $share_id" ;;
+esac
+
+public_share_response=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$share_id")
+case "$public_share_response" in
+    *'"code":0'*'"file_name":"shared-demo.txt"'*'"size":42'*'"type":"txt"'*'"expires_at":'*) ;;
+    *) fail "public share response: $public_share_response" ;;
+esac
+case "$public_share_response" in
+    *'"url"'*|*'"md5"'*) fail "public share leaked storage identity: $public_share_response" ;;
+esac
+
+foreign_unshare_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"md5\":\"$shared_md5\"}" \
+    "$base_url/api/dealfile?cmd=unshare")
+case "$foreign_unshare_response" in
+    *'"code":1'*) ;;
+    *) fail "foreign user unshare response: $foreign_unshare_response" ;;
+esac
+share_after_foreign_unshare=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$share_id")
+case "$share_after_foreign_unshare" in
+    *'"code":0'*) ;;
+    *) fail "foreign user revoked owner share: $share_after_foreign_unshare" ;;
 esac
 
 files_response=$(curl --silent --show-error --request POST \
@@ -337,6 +376,52 @@ case "$duplicate_share_response" in
     *) fail "duplicate share response: $duplicate_share_response" ;;
 esac
 
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "UPDATE share_file_list SET expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP()) WHERE share_id = '\''$1'\'';"' \
+    sh "$share_id" || fail "expire share fixture"
+
+expired_share_response=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$share_id")
+case "$expired_share_response" in
+    *'"code":2'*'"msg":"share unavailable"'*) ;;
+    *) fail "expired share response: $expired_share_response" ;;
+esac
+
+files_after_expiry=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\"}" \
+    "$base_url/api/myfiles")
+case "$files_after_expiry" in
+    *'"file_name":"shared-demo.txt","url":'*'"shared_status":0'*) ;;
+    *) fail "file list after share expiry: $files_after_expiry" ;;
+esac
+
+reshare_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
+    "$base_url/api/dealfile?cmd=share")
+case "$reshare_response" in
+    *'"code":0'*'"share_id":'*) ;;
+    *) fail "reshare response: $reshare_response" ;;
+esac
+new_share_id=$(printf "%s" "$reshare_response" | sed -n 's/.*"share_id":"\([^"]*\)".*/\1/p')
+[ "${#new_share_id}" = "64" ] || fail "reshare id length: $new_share_id"
+[ "$new_share_id" != "$share_id" ] || fail "reshare reused revoked share id"
+
+old_share_after_reshare=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$share_id")
+case "$old_share_after_reshare" in
+    *'"code":2'*) ;;
+    *) fail "old share revived after reshare: $old_share_after_reshare" ;;
+esac
+
+new_public_share=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$new_share_id")
+case "$new_public_share" in
+    *'"code":0'*'"file_name":"shared-demo.txt"'*) ;;
+    *) fail "new public share response: $new_public_share" ;;
+esac
+
 unshare_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$shared_md5\"}" \
@@ -344,6 +429,13 @@ unshare_response=$(curl --silent --show-error --request POST \
 case "$unshare_response" in
     *'"code":0'*) ;;
     *) fail "unshare response: $unshare_response" ;;
+esac
+
+revoked_share_response=$(curl --silent --show-error \
+    "$base_url/api/share?share_id=$new_share_id")
+case "$revoked_share_response" in
+    *'"code":2'*'"msg":"share unavailable"'*) ;;
+    *) fail "revoked share response: $revoked_share_response" ;;
 esac
 
 files_after_unshare=$(curl --silent --show-error --request POST \

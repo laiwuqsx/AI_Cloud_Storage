@@ -16,6 +16,7 @@ static ConfigEntry entries[] = {
     {"REDIS_HOST", NULL},
     {"REDIS_PORT", NULL},
     {"TOKEN_TTL_SECONDS", NULL},
+    {"SHARE_TTL_SECONDS", NULL},
     {"UPLOAD_MAX_BYTES", NULL},
     {"UPLOAD_TEMP_DIR", NULL},
     {"FASTDFS_CLIENT_CONFIG", NULL},
