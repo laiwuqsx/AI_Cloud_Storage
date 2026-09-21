@@ -99,7 +99,8 @@ ClaimFileResult claim_existing_file_with_location(const char *user, const char *
                                                   const char *file_name,
                                                   FileLocation *location);
 
-/* 0: removed, 1: user-file relationship does not exist, -1: database failure. */
+/* 0: removed (and, for the last reference, cleanup durably queued),
+ * 1: user-file relationship does not exist, -1: database failure. */
 int remove_user_file(const char *user, const char *md5);
 
 /* 0: shared, 1: user-file relationship does not exist, 2: already shared, -1: database failure. */

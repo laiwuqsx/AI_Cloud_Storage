@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cleanup_repository.h"
 #include "runtime_config.h"
 
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count)
@@ -397,16 +398,28 @@ ClaimFileResult claim_existing_file(const char *user, const char *md5,
 int remove_user_file(const char *user, const char *md5)
 {
     MYSQL *conn = NULL;
+    MYSQL_STMT *select_stmt = NULL;
     MYSQL_STMT *unshare_stmt = NULL;
     MYSQL_STMT *delete_stmt = NULL;
     MYSQL_STMT *decrement_stmt = NULL;
-    MYSQL_BIND unshare_bind[2], delete_bind[2], decrement_bind[1];
-    unsigned long user_length, md5_length;
+    MYSQL_STMT *delete_file_stmt = NULL;
+    MYSQL_BIND select_param[2], select_result[2];
+    MYSQL_BIND unshare_bind[2], delete_bind[2], decrement_bind[1], delete_file_bind[2];
+    unsigned long user_length, md5_length, storage_key_length;
+    char storage_key[257];
+    unsigned int reference_count = 0;
+    const char *select_sql =
+        "SELECT f.storage_key, f.reference_count "
+        "FROM user_file_list u JOIN file_info f ON f.md5 = u.md5 "
+        "WHERE u.user_name = ? AND u.md5 = ? FOR UPDATE";
     const char *delete_sql = "DELETE FROM user_file_list WHERE user_name = ? AND md5 = ?";
     const char *unshare_sql = "DELETE FROM share_file_list WHERE user_name = ? AND md5 = ?";
     const char *decrement_sql =
-        "UPDATE file_info SET reference_count = IF(reference_count > 0, reference_count - 1, 0) "
-        "WHERE md5 = ?";
+        "UPDATE file_info SET reference_count = reference_count - 1 "
+        "WHERE md5 = ? AND reference_count > 1";
+    const char *delete_file_sql =
+        "DELETE FROM file_info WHERE md5 = ? AND reference_count = 1 "
+        "AND NOT EXISTS (SELECT 1 FROM user_file_list WHERE md5 = ?)";
     int result = -1;
 
     if (!user || !md5) return -1;
@@ -421,6 +434,39 @@ int remove_user_file(const char *user, const char *md5)
 
     user_length = (unsigned long)strlen(user);
     md5_length = (unsigned long)strlen(md5);
+
+    select_stmt = mysql_stmt_init(conn);
+    if (!select_stmt ||
+        mysql_stmt_prepare(select_stmt, select_sql,
+                           (unsigned long)strlen(select_sql)) != 0) goto rollback;
+    memset(select_param, 0, sizeof(select_param));
+    select_param[0].buffer_type = MYSQL_TYPE_STRING;
+    select_param[0].buffer = (void *)user;
+    select_param[0].length = &user_length;
+    select_param[1].buffer_type = MYSQL_TYPE_STRING;
+    select_param[1].buffer = (void *)md5;
+    select_param[1].length = &md5_length;
+    memset(storage_key, 0, sizeof(storage_key));
+    memset(select_result, 0, sizeof(select_result));
+    select_result[0].buffer_type = MYSQL_TYPE_STRING;
+    select_result[0].buffer = storage_key;
+    select_result[0].buffer_length = sizeof(storage_key) - 1;
+    select_result[0].length = &storage_key_length;
+    select_result[1].buffer_type = MYSQL_TYPE_LONG;
+    select_result[1].buffer = &reference_count;
+    select_result[1].is_unsigned = 1;
+    if (mysql_stmt_bind_param(select_stmt, select_param) != 0 ||
+        mysql_stmt_execute(select_stmt) != 0 ||
+        mysql_stmt_bind_result(select_stmt, select_result) != 0 ||
+        mysql_stmt_store_result(select_stmt) != 0) goto rollback;
+    if (mysql_stmt_num_rows(select_stmt) == 0) {
+        result = 1;
+        goto rollback;
+    }
+    if (mysql_stmt_fetch(select_stmt) != 0 ||
+        storage_key_length >= sizeof(storage_key) || reference_count == 0) goto rollback;
+    storage_key[storage_key_length] = '\0';
+
     unshare_stmt = mysql_stmt_init(conn);
     if (!unshare_stmt ||
         mysql_stmt_prepare(unshare_stmt, unshare_sql, (unsigned long)strlen(unshare_sql)) != 0) goto rollback;
@@ -447,15 +493,37 @@ int remove_user_file(const char *user, const char *md5)
         goto rollback;
     }
 
-    decrement_stmt = mysql_stmt_init(conn);
-    if (!decrement_stmt ||
-        mysql_stmt_prepare(decrement_stmt, decrement_sql, (unsigned long)strlen(decrement_sql)) != 0) goto rollback;
-    memset(decrement_bind, 0, sizeof(decrement_bind));
-    decrement_bind[0].buffer_type = MYSQL_TYPE_STRING;
-    decrement_bind[0].buffer = (void *)md5; decrement_bind[0].length = &md5_length;
-    if (mysql_stmt_bind_param(decrement_stmt, decrement_bind) != 0 ||
-        mysql_stmt_execute(decrement_stmt) != 0 ||
-        mysql_stmt_affected_rows(decrement_stmt) != 1) goto rollback;
+    if (reference_count > 1) {
+        decrement_stmt = mysql_stmt_init(conn);
+        if (!decrement_stmt ||
+            mysql_stmt_prepare(decrement_stmt, decrement_sql,
+                               (unsigned long)strlen(decrement_sql)) != 0) goto rollback;
+        memset(decrement_bind, 0, sizeof(decrement_bind));
+        decrement_bind[0].buffer_type = MYSQL_TYPE_STRING;
+        decrement_bind[0].buffer = (void *)md5;
+        decrement_bind[0].length = &md5_length;
+        if (mysql_stmt_bind_param(decrement_stmt, decrement_bind) != 0 ||
+            mysql_stmt_execute(decrement_stmt) != 0 ||
+            mysql_stmt_affected_rows(decrement_stmt) != 1) goto rollback;
+    } else {
+        delete_file_stmt = mysql_stmt_init(conn);
+        if (!delete_file_stmt ||
+            mysql_stmt_prepare(delete_file_stmt, delete_file_sql,
+                               (unsigned long)strlen(delete_file_sql)) != 0) goto rollback;
+        memset(delete_file_bind, 0, sizeof(delete_file_bind));
+        delete_file_bind[0].buffer_type = MYSQL_TYPE_STRING;
+        delete_file_bind[0].buffer = (void *)md5;
+        delete_file_bind[0].length = &md5_length;
+        delete_file_bind[1].buffer_type = MYSQL_TYPE_STRING;
+        delete_file_bind[1].buffer = (void *)md5;
+        delete_file_bind[1].length = &md5_length;
+        if (mysql_stmt_bind_param(delete_file_stmt, delete_file_bind) != 0 ||
+            mysql_stmt_execute(delete_file_stmt) != 0 ||
+            mysql_stmt_affected_rows(delete_file_stmt) != 1 ||
+            enqueue_storage_cleanup_in_transaction(
+                conn, storage_key, "last_reference_removed",
+                "awaiting FastDFS delete") != 0) goto rollback;
+    }
     if (mysql_commit(conn) != 0) goto rollback;
     result = 0;
     goto done;
@@ -463,9 +531,11 @@ int remove_user_file(const char *user, const char *md5)
 rollback:
     mysql_rollback(conn);
 done:
+    if (select_stmt) mysql_stmt_close(select_stmt);
     if (unshare_stmt) mysql_stmt_close(unshare_stmt);
     if (delete_stmt) mysql_stmt_close(delete_stmt);
     if (decrement_stmt) mysql_stmt_close(decrement_stmt);
+    if (delete_file_stmt) mysql_stmt_close(delete_file_stmt);
     if (conn) mysql_close(conn);
     return result;
 }

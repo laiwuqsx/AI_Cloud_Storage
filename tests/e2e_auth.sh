@@ -15,6 +15,7 @@ transaction_md5=$(printf "%032d" "$(date +%s)")
 upload_fixture=$(mktemp)
 downloaded_fixture=$(mktemp)
 race_fixture=$(mktemp)
+reclaim_fixture=$(mktemp)
 race_response_file_a=$(mktemp)
 race_response_file_b=$(mktemp)
 save_response_file_a=$(mktemp)
@@ -23,7 +24,7 @@ cancel_response_file=$(mktemp)
 cancel_save_response_file=$(mktemp)
 
 cleanup() {
-    rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" \
+    rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" "$reclaim_fixture" \
         "$race_response_file_a" "$race_response_file_b" \
         "$save_response_file_a" "$save_response_file_b" \
         "$cancel_response_file" "$cancel_save_response_file"
@@ -50,6 +51,13 @@ if command -v md5sum >/dev/null 2>&1; then
     race_md5=$(md5sum "$race_fixture" | awk '{print $1}')
 else
     race_md5=$(md5 -q "$race_fixture")
+fi
+printf 'Last-reference reclaim fixture for %s\n' "$race_suffix" > "$reclaim_fixture"
+reclaim_size=$(wc -c < "$reclaim_fixture" | tr -d '[:space:]')
+if command -v md5sum >/dev/null 2>&1; then
+    reclaim_md5=$(md5sum "$reclaim_fixture" | awk '{print $1}')
+else
+    reclaim_md5=$(md5 -q "$reclaim_fixture")
 fi
 
 fail() {
@@ -756,6 +764,79 @@ saved_download_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE user_name = '\''$2'\'' AND md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
     sh "$upload_md5" "$race_user_a")
 [ "$saved_download_state" = "1|1" ] || fail "recipient download ownership state: $saved_download_state"
+
+reclaim_upload=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $race_user_b" \
+    --header "X-Upload-Token: $race_token_b" \
+    --header "X-Upload-MD5: $reclaim_md5" \
+    --header "X-Upload-Size: $reclaim_size" \
+    --form "file=@$reclaim_fixture;filename=reclaim-e2e.txt;type=text/plain" \
+    "$base_url/api/upload")
+case "$reclaim_upload" in *'"code":0'*) ;; *) fail "reclaim fixture upload: $reclaim_upload" ;; esac
+reclaim_old_key=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT storage_key FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$reclaim_md5")
+case "$reclaim_old_key" in group1/M00/*) ;; *) fail "reclaim old storage key: $reclaim_old_key" ;; esac
+reclaim_old_suffix=${reclaim_old_key#group1/M00/}
+docker compose -f "$compose_file" exec -T storage \
+    test -f "/data/fastdfs/storage/data/$reclaim_old_suffix" || \
+    fail "reclaim old object was not stored"
+
+reclaim_delete=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_b\",\"token\":\"$race_token_b\",\"md5\":\"$reclaim_md5\"}" \
+    "$base_url/api/dealfile?cmd=del")
+case "$reclaim_delete" in *'"code":0'*) ;; *) fail "last-reference delete: $reclaim_delete" ;; esac
+reclaim_queued_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT((SELECT COUNT(*) FROM file_info WHERE md5 = '\''$1'\''), CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE md5 = '\''$1'\''), CHAR(124), status, CHAR(124), reason) FROM storage_cleanup_job WHERE storage_key = '\''$2'\'';"' \
+    sh "$reclaim_md5" "$reclaim_old_key")
+[ "$reclaim_queued_state" = "0|0|pending|last_reference_removed" ] || \
+    fail "last-reference cleanup transaction: $reclaim_queued_state"
+reclaim_duplicate_delete=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_b\",\"token\":\"$race_token_b\",\"md5\":\"$reclaim_md5\"}" \
+    "$base_url/api/dealfile?cmd=del")
+case "$reclaim_duplicate_delete" in *'"code":1'*) ;; *) fail "duplicate last-reference delete: $reclaim_duplicate_delete" ;; esac
+reclaim_job_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$reclaim_old_key")
+[ "$reclaim_job_count" = "1" ] || fail "duplicate delete changed cleanup jobs: $reclaim_job_count"
+docker compose -f "$compose_file" exec -T storage \
+    test -f "/data/fastdfs/storage/data/$reclaim_old_suffix" || \
+    fail "last-reference object disappeared before worker"
+
+reclaim_reupload=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $race_user_a" \
+    --header "X-Upload-Token: $race_token_a" \
+    --header "X-Upload-MD5: $reclaim_md5" \
+    --header "X-Upload-Size: $reclaim_size" \
+    --form "file=@$reclaim_fixture;filename=reclaim-reuploaded.txt;type=text/plain" \
+    "$base_url/api/upload")
+case "$reclaim_reupload" in *'"code":0'*) ;; *) fail "reclaim reupload: $reclaim_reupload" ;; esac
+reclaim_new_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(storage_key, CHAR(124), reference_count, CHAR(124), (SELECT COUNT(*) FROM user_file_list WHERE md5 = '\''$1'\'')) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$reclaim_md5")
+reclaim_new_key=${reclaim_new_state%%|*}
+[ "$reclaim_new_key" != "$reclaim_old_key" ] || fail "reupload reused queued storage key"
+case "$reclaim_new_state" in group1/M00/*'|1|1') ;; *) fail "reclaim replacement state: $reclaim_new_state" ;; esac
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/cleanup_worker 1 || fail "last-reference cleanup worker"
+reclaim_job_status=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT status FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$reclaim_old_key")
+[ "$reclaim_job_status" = "done" ] || fail "last-reference cleanup status: $reclaim_job_status"
+if docker compose -f "$compose_file" exec -T storage \
+    test -f "/data/fastdfs/storage/data/$reclaim_old_suffix"; then
+    fail "last-reference worker did not remove old object"
+fi
+curl --silent --show-error --fail --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$race_user_a\",\"token\":\"$race_token_a\",\"md5\":\"$reclaim_md5\"}" \
+    "$base_url/api/download" --output "$downloaded_fixture" || \
+    fail "replacement object download failed after old cleanup"
+cmp -s "$reclaim_fixture" "$downloaded_fixture" || \
+    fail "replacement object bytes changed after old cleanup"
 
 logout_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \

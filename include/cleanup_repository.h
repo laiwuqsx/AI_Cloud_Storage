@@ -1,6 +1,8 @@
 #ifndef AI_CLOUD_CLEANUP_REPOSITORY_H
 #define AI_CLOUD_CLEANUP_REPOSITORY_H
 
+#include <mysql/mysql.h>
+
 #define CLEANUP_STORAGE_KEY_CAPACITY 257
 #define CLEANUP_REASON_CAPACITY 65
 
@@ -14,6 +16,12 @@ typedef struct {
 /* Idempotently creates or refreshes a pending cleanup for one storage key. */
 int enqueue_storage_cleanup(const char *storage_key, const char *reason,
                             const char *last_error);
+
+/* Enqueues on a caller-owned MySQL connection without committing its transaction. */
+int enqueue_storage_cleanup_in_transaction(MYSQL *connection,
+                                           const char *storage_key,
+                                           const char *reason,
+                                           const char *last_error);
 
 /* 0: claimed, 1: no pending job, -1: database failure. */
 int claim_next_storage_cleanup(StorageCleanupJob *job);

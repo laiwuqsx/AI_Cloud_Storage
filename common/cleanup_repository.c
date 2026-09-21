@@ -31,10 +31,11 @@ static int valid_text(const char *value, size_t maximum)
     return length > 0 && length <= maximum;
 }
 
-int enqueue_storage_cleanup(const char *storage_key, const char *reason,
-                            const char *last_error)
+int enqueue_storage_cleanup_in_transaction(MYSQL *connection,
+                                           const char *storage_key,
+                                           const char *reason,
+                                           const char *last_error)
 {
-    MYSQL *connection = NULL;
     MYSQL_STMT *statement = NULL;
     MYSQL_BIND bind[3];
     unsigned long lengths[3];
@@ -46,10 +47,8 @@ int enqueue_storage_cleanup(const char *storage_key, const char *reason,
         "last_error = VALUES(last_error), completed_at = NULL";
     int result = -1;
 
-    if (!valid_text(storage_key, 256) || !valid_text(reason, 64) ||
+    if (!connection || !valid_text(storage_key, 256) || !valid_text(reason, 64) ||
         !valid_text(last_error, 512)) return -1;
-    connection = connect_database();
-    if (!connection) goto done;
     statement = mysql_stmt_init(connection);
     if (!statement ||
         mysql_stmt_prepare(statement, sql, (unsigned long)strlen(sql)) != 0) goto done;
@@ -73,7 +72,19 @@ int enqueue_storage_cleanup(const char *storage_key, const char *reason,
 
 done:
     if (statement) mysql_stmt_close(statement);
-    if (connection) mysql_close(connection);
+    return result;
+}
+
+int enqueue_storage_cleanup(const char *storage_key, const char *reason,
+                            const char *last_error)
+{
+    MYSQL *connection = connect_database();
+    int result;
+
+    if (!connection) return -1;
+    result = enqueue_storage_cleanup_in_transaction(connection, storage_key,
+                                                    reason, last_error);
+    mysql_close(connection);
     return result;
 }
 

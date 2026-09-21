@@ -20,6 +20,8 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数和 `pending/running/done` 状态；手动 worker 会领取任务、重试删除，并将中断超过五分钟的 running 任务重新排队。已有数据库需要先执行 `sql/migrations/001_storage_cleanup_job.sql`。
 
+用户删除最后一条文件关系时，应用不会在 HTTP 请求的数据库事务中调用 FastDFS。它会锁定用户关系和 `file_info`，在同一个 MySQL 事务中删除分享、用户关系和零引用的 `file_info`，并写入 `last_reference_removed` 清理任务；提交后由 worker 异步删除旧 storage key。即使服务在提交后崩溃，任务仍可恢复；若相同 MD5 在 worker 执行前重新上传，新记录会获得新的 storage key，旧任务不会误删新对象。
+
 文件分享会生成 32 字节安全随机数编码成的 64 位十六进制 `share_id`，默认七天过期（可通过 `SHARE_TTL_SECONDS` 调整）。公开查询只返回文件名、大小、类型和过期时间，不暴露 MD5、FastDFS storage_key 或存储直链；取消分享或过期后旧链接立即不可查询，重新分享会生成新 ID。已有数据库需要执行 `sql/migrations/002_share_links.sql`。
 
 登录用户可通过有效 `share_id` 把文件保存到自己的文件列表。事务会依次锁定分享记录、所有者逻辑文件和物理文件记录，再插入接收者的 `user_file_list` 并原子增加 `reference_count`。重复或并发重复转存返回成功但不会重复计数；转存与撤销并发时，以谁先取得分享记录锁为准，已经完成的转存不会因之后撤销而消失。
@@ -78,7 +80,7 @@ make test
 - POST /api/upload：流式接收并验证文件，成功响应返回 `/api/download`，不返回可绕过鉴权的存储直链。
 - POST /api/download：携带 user、Token 和 md5，校验当前用户所有权后下载文件。
 - POST /api/md5：安全上传预检。`code=1` 表示当前用户未拥有，必须普通上传并由服务端验证内容；全局文件存在与否返回相同结果。`code=3` 表示请求错误；`code=4` 表示 Token 无效；`code=5` 表示用户已经拥有；`code=6` 表示数据库故障。
-- POST /api/dealfile?cmd=del：携带 user、Token、md5，删除当前用户的文件关联。
+- POST /api/dealfile?cmd=del：携带 user、Token、md5，事务删除当前用户关系；最后一个引用会同时删除 `file_info` 并持久化异步物理清理任务。
 - POST /api/dealfile?cmd=share：携带 user、Token、md5，并可选携带 4–12 位字母数字 `access_code`；返回 `share_id`、`expires_in` 和 `requires_code`。
 - GET /api/share?share_id=&lt;64位ID&gt;：匿名查看有效分享的最小文件元数据及 `requires_code`；不返回摘要或盐。
 - POST /api/share/save：携带 `user`、Token、`share_id`，受保护分享还需在 JSON 中携带 `access_code`；重复转存幂等成功。
@@ -92,7 +94,7 @@ Docker 守护进程运行后，在项目根目录执行：
 
     make e2e
 
-测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、受控私有/分享下载及字节一致性、直链封锁、下载计数、提取码哈希与限错、上传事务入库、并发上传、跨用户 MD5 认领拒绝、验证后去重、分享过期、转存、并发重复转存、转存/撤销竞争、撤销、删除和退出登录。测试会确认原作者撤销或删除自己的关系后，接收者仍能通过自己的权限下载。
+测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、受控私有/分享下载及字节一致性、直链封锁、下载计数、提取码哈希与限错、上传事务入库、并发上传、跨用户 MD5 认领拒绝、验证后去重、分享过期、转存、并发重复转存、转存/撤销竞争、零引用物理回收、撤销、删除和退出登录。测试会确认多用户引用时不会误删；最后一个引用删除后任务可恢复；相同内容重新上传后，清理旧对象不会影响新对象。
 
 手动处理最多 100 个待清理 FastDFS 对象：
 

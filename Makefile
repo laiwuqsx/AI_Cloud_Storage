@@ -4,6 +4,7 @@ FCGI_LIBS := -lfcgi
 BIN_DIR := bin_cgi
 
 COMMON := common/json_util.c common/http_response.c common/runtime_config.c
+FILE_REPOSITORY := common/file_repository.c common/cleanup_repository.c
 MYSQL_LIBS := -lmysqlclient
 REDIS_LIBS := -lhiredis
 OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
@@ -20,36 +21,36 @@ $(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) common/md5.c common/user_validat
 $(BIN_DIR)/register: src_cgi/reg_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS)
 
-$(BIN_DIR)/myfiles: src_cgi/myfiles_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c | $(BIN_DIR)
+$(BIN_DIR)/myfiles: src_cgi/myfiles_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/md5: src_cgi/md5_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c | $(BIN_DIR)
+$(BIN_DIR)/md5: src_cgi/md5_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/share_id.c common/share_code.c | $(BIN_DIR)
+$(BIN_DIR)/dealfile: src_cgi/dealfile_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) common/share_id.c common/share_code.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
 $(BIN_DIR)/logout: src_cgi/logout_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/upload: src_cgi/upload_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c common/file_repository.c common/cleanup_repository.c common/upload_intake.c common/multipart_upload.c common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
+$(BIN_DIR)/upload: src_cgi/upload_cgi.c $(COMMON) common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) common/upload_intake.c common/multipart_upload.c common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+$(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
-$(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) common/file_repository.c common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+$(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
 integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker
 
-$(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c common/file_repository.c common/runtime_config.c | $(BIN_DIR)
+$(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_repository_probe: tests/cleanup_repository_probe.c common/cleanup_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
-$(BIN_DIR)/share_save_probe: tests/share_save_probe.c common/file_repository.c common/runtime_config.c | $(BIN_DIR)
+$(BIN_DIR)/share_save_probe: tests/share_save_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)
