@@ -18,7 +18,7 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 `/api/md5` 只检查当前用户是否已经拥有文件，不再允许仅凭全局 MD5 认领其他用户的私有内容。未拥有时统一返回需要普通上传，不泄露该 MD5 是否存在；普通上传会计算服务端 MD5，在验证真实字节后仍可复用已有物理对象并清理重复上传的 FastDFS 副本。
 
-若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数和 `pending/running/done` 状态；手动 worker 会领取任务、重试删除，并将中断超过五分钟的 running 任务重新排队。已有数据库需要先执行 `sql/migrations/001_storage_cleanup_job.sql`。
+若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数、下次执行时间和 `pending/running/done/failed` 状态；手动 worker 会领取任务，按指数退避重试删除，达到最大次数后进入 `failed`，并将中断超过五分钟的 running 任务重新排队。默认最多尝试 5 次，退避从 30 秒开始、最长 1 小时，可通过 `CLEANUP_MAX_RETRIES` 和 `CLEANUP_RETRY_BASE_SECONDS` 调整。已有数据库依次执行 `sql/migrations/001_storage_cleanup_job.sql` 和 `sql/migrations/004_cleanup_retry_policy.sql`。
 
 用户删除最后一条文件关系时，应用不会在 HTTP 请求的数据库事务中调用 FastDFS。它会锁定用户关系和 `file_info`，在同一个 MySQL 事务中删除分享、用户关系和零引用的 `file_info`，并写入 `last_reference_removed` 清理任务；提交后由 worker 异步删除旧 storage key。即使服务在提交后崩溃，任务仍可恢复；若相同 MD5 在 worker 执行前重新上传，新记录会获得新的 storage key，旧任务不会误删新对象。
 

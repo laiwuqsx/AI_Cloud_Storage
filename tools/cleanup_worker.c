@@ -8,6 +8,9 @@
 
 #define DEFAULT_JOB_LIMIT 100UL
 #define STALE_JOB_SECONDS 300U
+#define DEFAULT_MAX_RETRIES 5U
+#define DEFAULT_RETRY_BASE_SECONDS 30U
+#define MAX_RETRY_DELAY_SECONDS 3600U
 
 static int parse_limit(int argc, char **argv, unsigned long *limit)
 {
@@ -26,6 +29,33 @@ static int parse_limit(int argc, char **argv, unsigned long *limit)
     return 0;
 }
 
+static unsigned int config_unsigned(const char *name, unsigned int fallback,
+                                    unsigned int maximum)
+{
+    const char *text = runtime_config_get(name, NULL);
+    char *end;
+    unsigned long value;
+
+    if (!text || text[0] == '\0') return fallback;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || *end != '\0' || value == 0 || value > maximum) return fallback;
+    return (unsigned int)value;
+}
+
+static unsigned int retry_delay(unsigned int retry_count, unsigned int base_seconds)
+{
+    unsigned int delay = base_seconds;
+    unsigned int exponent = retry_count;
+
+    while (exponent > 0 && delay < MAX_RETRY_DELAY_SECONDS) {
+        if (delay > MAX_RETRY_DELAY_SECONDS / 2U) return MAX_RETRY_DELAY_SECONDS;
+        delay *= 2U;
+        --exponent;
+    }
+    return delay > MAX_RETRY_DELAY_SECONDS ? MAX_RETRY_DELAY_SECONDS : delay;
+}
+
 int main(int argc, char **argv)
 {
     const char *client_config;
@@ -35,6 +65,8 @@ int main(int argc, char **argv)
     StorageCleanupJob job;
     unsigned long limit;
     unsigned long completed = 0;
+    unsigned int max_retries;
+    unsigned int retry_base_seconds;
     int claim_result;
     int stale_count;
 
@@ -43,6 +75,10 @@ int main(int argc, char **argv)
         return 2;
     }
     runtime_config_init();
+    max_retries = config_unsigned("CLEANUP_MAX_RETRIES", DEFAULT_MAX_RETRIES, 100U);
+    retry_base_seconds = config_unsigned("CLEANUP_RETRY_BASE_SECONDS",
+                                         DEFAULT_RETRY_BASE_SECONDS,
+                                         MAX_RETRY_DELAY_SECONDS);
     client_config = runtime_config_get("FASTDFS_CLIENT_CONFIG", NULL);
     public_base_url = runtime_config_get("FASTDFS_PUBLIC_BASE_URL", "http://unused");
     fastdfs_storage_context_init(&fastdfs_context, client_config, public_base_url);
@@ -64,12 +100,27 @@ int main(int argc, char **argv)
             return 1;
         }
         if (storage_client_remove(&storage, job.storage_key) != 0) {
-            if (retry_storage_cleanup(job.id, "FastDFS delete retry failed") != 0) {
-                fprintf(stderr, "cleanup worker: job %llu failed and could not be requeued\n",
-                        job.id);
+            unsigned int attempted = job.retry_count + 1U;
+
+            if (attempted >= max_retries) {
+                if (fail_storage_cleanup(job.id, "FastDFS delete retry limit reached") != 0) {
+                    fprintf(stderr, "cleanup worker: job %llu could not enter failed state\n",
+                            job.id);
+                } else {
+                    fprintf(stderr, "cleanup worker: job %llu failed permanently after %u attempt(s)\n",
+                            job.id, attempted);
+                }
             } else {
-                fprintf(stderr, "cleanup worker: job %llu requeued after delete failure\n",
-                        job.id);
+                unsigned int delay = retry_delay(job.retry_count, retry_base_seconds);
+
+                if (retry_storage_cleanup_after(job.id, "FastDFS delete retry failed",
+                                                delay) != 0) {
+                    fprintf(stderr, "cleanup worker: job %llu failed and could not be requeued\n",
+                            job.id);
+                } else {
+                    fprintf(stderr, "cleanup worker: job %llu retry scheduled in %u second(s)\n",
+                            job.id, delay);
+                }
             }
             return 1;
         }

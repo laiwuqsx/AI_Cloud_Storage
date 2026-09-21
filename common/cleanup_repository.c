@@ -44,7 +44,8 @@ int enqueue_storage_cleanup_in_transaction(MYSQL *connection,
         "(storage_key, reason, status, retry_count, last_error) "
         "VALUES (?, ?, 'pending', 0, ?) "
         "ON DUPLICATE KEY UPDATE reason = VALUES(reason), status = 'pending', "
-        "last_error = VALUES(last_error), completed_at = NULL";
+        "retry_count = 0, last_error = VALUES(last_error), "
+        "next_attempt_at = CURRENT_TIMESTAMP, completed_at = NULL";
     int result = -1;
 
     if (!connection || !valid_text(storage_key, 256) || !valid_text(reason, 64) ||
@@ -101,7 +102,8 @@ int claim_next_storage_cleanup(StorageCleanupJob *job)
     char reason[CLEANUP_REASON_CAPACITY];
     const char *select_sql =
         "SELECT id, storage_key, reason, retry_count FROM storage_cleanup_job "
-        "WHERE status = 'pending' ORDER BY updated_at, id LIMIT 1 "
+        "WHERE status = 'pending' AND next_attempt_at <= CURRENT_TIMESTAMP "
+        "ORDER BY next_attempt_at, id LIMIT 1 "
         "FOR UPDATE SKIP LOCKED";
     const char *update_sql =
         "UPDATE storage_cleanup_job SET status = 'running' WHERE id = ?";
@@ -230,9 +232,57 @@ int complete_storage_cleanup(unsigned long long job_id)
 
 int retry_storage_cleanup(unsigned long long job_id, const char *last_error)
 {
+    return retry_storage_cleanup_after(job_id, last_error, 0);
+}
+
+int retry_storage_cleanup_after(unsigned long long job_id, const char *last_error,
+                                unsigned int retry_after_seconds)
+{
     const char *sql =
         "UPDATE storage_cleanup_job SET status = 'pending', retry_count = retry_count + 1, "
-        "last_error = ?, completed_at = NULL WHERE id = ? AND status = 'running'";
+        "last_error = ?, next_attempt_at = TIMESTAMPADD(SECOND, ?, CURRENT_TIMESTAMP), "
+        "completed_at = NULL WHERE id = ? AND status = 'running'";
+    MYSQL *connection = NULL;
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND bind[3];
+    my_ulonglong id = (my_ulonglong)job_id;
+    unsigned int delay = retry_after_seconds;
+    unsigned long error_length;
+    int result = -1;
+
+    if (job_id == 0 || !valid_text(last_error, 512)) return -1;
+    connection = connect_database();
+    if (!connection) goto done;
+    statement = mysql_stmt_init(connection);
+    if (!statement || mysql_stmt_prepare(statement, sql,
+                                         (unsigned long)strlen(sql)) != 0) goto done;
+    memset(bind, 0, sizeof(bind));
+    error_length = (unsigned long)strlen(last_error);
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = (void *)last_error;
+    bind[0].length = &error_length;
+    bind[1].buffer_type = MYSQL_TYPE_LONG;
+    bind[1].buffer = &delay;
+    bind[1].is_unsigned = 1;
+    bind[2].buffer_type = MYSQL_TYPE_LONGLONG;
+    bind[2].buffer = &id;
+    bind[2].is_unsigned = 1;
+    if (mysql_stmt_bind_param(statement, bind) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    result = mysql_stmt_affected_rows(statement) == 1 ? 0 : 1;
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    if (connection) mysql_close(connection);
+    return result;
+}
+
+int fail_storage_cleanup(unsigned long long job_id, const char *last_error)
+{
+    const char *sql =
+        "UPDATE storage_cleanup_job SET status = 'failed', retry_count = retry_count + 1, "
+        "last_error = ?, completed_at = CURRENT_TIMESTAMP "
+        "WHERE id = ? AND status = 'running'";
 
     return update_running_job(job_id, sql, last_error);
 }
@@ -245,7 +295,7 @@ int requeue_stale_storage_cleanups(unsigned int stale_after_seconds)
     unsigned int seconds = stale_after_seconds;
     const char *sql =
         "UPDATE storage_cleanup_job SET status = 'pending', retry_count = retry_count + 1, "
-        "last_error = 'worker lease expired' "
+        "last_error = 'worker lease expired', next_attempt_at = CURRENT_TIMESTAMP "
         "WHERE status = 'running' AND updated_at < "
         "TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP)";
     my_ulonglong changed;

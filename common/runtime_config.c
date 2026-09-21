@@ -20,7 +20,9 @@ static ConfigEntry entries[] = {
     {"UPLOAD_MAX_BYTES", NULL},
     {"UPLOAD_TEMP_DIR", NULL},
     {"FASTDFS_CLIENT_CONFIG", NULL},
-    {"FASTDFS_PUBLIC_BASE_URL", NULL}
+    {"FASTDFS_PUBLIC_BASE_URL", NULL},
+    {"CLEANUP_MAX_RETRIES", NULL},
+    {"CLEANUP_RETRY_BASE_SECONDS", NULL}
 };
 static int initialized;
 

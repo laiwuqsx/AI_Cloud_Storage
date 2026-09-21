@@ -35,7 +35,21 @@ static MYSQL *connect_database(void)
     return connection;
 }
 
-static int verify_and_remove(const char *storage_key)
+static int run_storage_key_sql(const char *format, const char *storage_key)
+{
+    MYSQL *connection = connect_database();
+    char sql[1024];
+    int result;
+
+    if (!connection) return 0;
+    snprintf(sql, sizeof(sql), format, storage_key);
+    result = mysql_query(connection, sql) == 0;
+    mysql_close(connection);
+    return result;
+}
+
+static int verify_state(const char *storage_key, const char *expected_status,
+                        const char *expected_retries, const char *expected_reason)
 {
     MYSQL *connection = NULL;
     MYSQL_RES *result_set = NULL;
@@ -53,23 +67,20 @@ static int verify_and_remove(const char *storage_key)
     if (mysql_query(connection, sql) == 0 &&
         (result_set = mysql_store_result(connection)) != NULL &&
         (row = mysql_fetch_row(result_set)) != NULL &&
-        row[0] && strcmp(row[0], "done") == 0 &&
-        row[1] && strcmp(row[1], "1") == 0 &&
-        row[2] && strcmp(row[2], "probe_refresh") == 0 &&
+        row[0] && strcmp(row[0], expected_status) == 0 &&
+        row[1] && strcmp(row[1], expected_retries) == 0 &&
+        row[2] && strcmp(row[2], expected_reason) == 0 &&
         row[3] && strcmp(row[3], "1") == 0) {
         verified = 1;
     }
     if (result_set) mysql_free_result(result_set);
-    snprintf(sql, sizeof(sql),
-             "DELETE FROM storage_cleanup_job WHERE storage_key = '%s'", storage_key);
-    if (mysql_query(connection, sql) != 0) verified = 0;
     mysql_close(connection);
     return verified;
 }
 
 int main(int argc, char **argv)
 {
-    StorageCleanupJob first, second;
+    StorageCleanupJob first, second, third;
     char storage_key[128];
     int verified;
 
@@ -86,17 +97,30 @@ int main(int argc, char **argv)
         fprintf(stderr, "cleanup repository probe could not claim initial job\n");
         return 1;
     }
-    if (retry_storage_cleanup(first.id, "probe retry") != 0 ||
+    if (retry_storage_cleanup_after(first.id, "probe delayed retry", 3600) != 0 ||
+        claim_next_storage_cleanup(&second) != 1 ||
+        !run_storage_key_sql("UPDATE storage_cleanup_job SET next_attempt_at = "
+                             "CURRENT_TIMESTAMP WHERE storage_key = '%s'", storage_key) ||
         claim_next_storage_cleanup(&second) != 0 || second.id != first.id ||
         second.retry_count != 1 || strcmp(second.storage_key, storage_key) != 0) {
         fprintf(stderr, "cleanup repository probe could not retry job\n");
         return 1;
     }
-    if (complete_storage_cleanup(second.id) != 0) {
+    if (fail_storage_cleanup(second.id, "probe terminal failure") != 0 ||
+        !verify_state(storage_key, "failed", "2", "probe_refresh")) {
+        fprintf(stderr, "cleanup repository probe could not fail job\n");
+        return 1;
+    }
+    if (enqueue_storage_cleanup(storage_key, "probe_reopen", "new cleanup request") != 0 ||
+        claim_next_storage_cleanup(&third) != 0 || third.id != first.id ||
+        third.retry_count != 0 || strcmp(third.reason, "probe_reopen") != 0 ||
+        complete_storage_cleanup(third.id) != 0) {
         fprintf(stderr, "cleanup repository probe could not complete job\n");
         return 1;
     }
-    verified = verify_and_remove(storage_key);
+    verified = verify_state(storage_key, "done", "0", "probe_reopen");
+    if (!run_storage_key_sql("DELETE FROM storage_cleanup_job WHERE storage_key = '%s'",
+                             storage_key)) verified = 0;
     if (!verified) {
         fprintf(stderr, "cleanup repository probe database state mismatch\n");
         return 1;

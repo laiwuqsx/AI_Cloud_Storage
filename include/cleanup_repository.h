@@ -29,6 +29,9 @@ int claim_next_storage_cleanup(StorageCleanupJob *job);
 /* 0: state changed, 1: job was no longer running, -1: database failure. */
 int complete_storage_cleanup(unsigned long long job_id);
 int retry_storage_cleanup(unsigned long long job_id, const char *last_error);
+int retry_storage_cleanup_after(unsigned long long job_id, const char *last_error,
+                                unsigned int retry_after_seconds);
+int fail_storage_cleanup(unsigned long long job_id, const char *last_error);
 
 /* Returns the number requeued, or -1 on database failure. */
 int requeue_stale_storage_cleanups(unsigned int stale_after_seconds);

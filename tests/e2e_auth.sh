@@ -98,6 +98,14 @@ if [ "$share_code_column_count" = "0" ]; then
         < sql/migrations/003_share_access_code.sql || fail "share access code migration"
 fi
 
+cleanup_retry_column_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''storage_cleanup_job'\'' AND column_name = '\''next_attempt_at'\'';"')
+if [ "$cleanup_retry_column_count" = "0" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/004_cleanup_retry_policy.sql || fail "cleanup retry policy migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -369,6 +377,23 @@ fi
 docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
     sh "$cleanup_worker_key" || fail "cleanup worker fixture database cleanup"
+
+failed_cleanup_key="group1/M00/00/00/missing_${transaction_md5}"
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "INSERT INTO storage_cleanup_job (storage_key, reason, last_error) VALUES ('\''$1'\'', '\''e2e_retry_limit'\'', '\''fixture'\'');"' \
+    sh "$failed_cleanup_key" || fail "failed cleanup fixture enqueue"
+if docker compose -f "$compose_file" exec -T -e CLEANUP_MAX_RETRIES=1 fastcgi_app \
+    /app/bin_cgi/cleanup_worker 1; then
+    fail "cleanup worker unexpectedly deleted missing object"
+fi
+failed_cleanup_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(status, CHAR(124), retry_count) FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$failed_cleanup_key")
+[ "$failed_cleanup_state" = "failed|1" ] || \
+    fail "cleanup worker retry limit state: $failed_cleanup_state"
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
+    sh "$failed_cleanup_key" || fail "failed cleanup fixture database cleanup"
 
 missing_file_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \

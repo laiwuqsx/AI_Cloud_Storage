@@ -77,6 +77,8 @@ services:
       UPLOAD_TEMP_DIR: /tmp
       FASTDFS_CLIENT_CONFIG: /etc/fdfs/client.conf
       FASTDFS_PUBLIC_BASE_URL: ${FASTDFS_PUBLIC_BASE_URL:-http://localhost:8080/storage}
+      CLEANUP_MAX_RETRIES: ${CLEANUP_MAX_RETRIES:-5}
+      CLEANUP_RETRY_BASE_SECONDS: ${CLEANUP_RETRY_BASE_SECONDS:-30}
     depends_on:
       mysql:
         condition: service_healthy
