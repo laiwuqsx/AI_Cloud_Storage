@@ -22,7 +22,8 @@ static ConfigEntry entries[] = {
     {"FASTDFS_CLIENT_CONFIG", NULL},
     {"FASTDFS_PUBLIC_BASE_URL", NULL},
     {"CLEANUP_MAX_RETRIES", NULL},
-    {"CLEANUP_RETRY_BASE_SECONDS", NULL}
+    {"CLEANUP_RETRY_BASE_SECONDS", NULL},
+    {"CLEANUP_POLL_INTERVAL_SECONDS", NULL}
 };
 static int initialized;
 

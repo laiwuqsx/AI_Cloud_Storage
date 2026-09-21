@@ -66,7 +66,8 @@ fail() {
 }
 
 echo "Starting authentication development stack..."
-docker compose -f "$compose_file" up -d --build
+docker compose -f "$compose_file" up -d --build \
+    mysql redis tracker storage fastcgi_app nginx
 
 attempt=1
 until curl --silent --fail "$base_url/healthz" >/dev/null; do

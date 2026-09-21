@@ -87,6 +87,29 @@ services:
       storage:
         condition: service_healthy
 
+  cleanup_worker:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/Dockerfile
+      target: fastcgi_app
+    command: ["/app/bin_cgi/cleanup_worker", "--watch", "100"]
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-dev-password}
+      MYSQL_DATABASE: ai_cloud_storage
+      FASTDFS_CLIENT_CONFIG: /etc/fdfs/client.conf
+      FASTDFS_PUBLIC_BASE_URL: ${FASTDFS_PUBLIC_BASE_URL:-http://localhost:8080/storage}
+      CLEANUP_MAX_RETRIES: ${CLEANUP_MAX_RETRIES:-5}
+      CLEANUP_RETRY_BASE_SECONDS: ${CLEANUP_RETRY_BASE_SECONDS:-30}
+      CLEANUP_POLL_INTERVAL_SECONDS: ${CLEANUP_POLL_INTERVAL_SECONDS:-10}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+
   nginx:
     image: nginx:1.27-alpine
     ports:

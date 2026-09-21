@@ -18,7 +18,7 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 `/api/md5` 只检查当前用户是否已经拥有文件，不再允许仅凭全局 MD5 认领其他用户的私有内容。未拥有时统一返回需要普通上传，不泄露该 MD5 是否存在；普通上传会计算服务端 MD5，在验证真实字节后仍可复用已有物理对象并清理重复上传的 FastDFS 副本。
 
-若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数、下次执行时间和 `pending/running/done/failed` 状态；手动 worker 会领取任务，按指数退避重试删除，达到最大次数后进入 `failed`，并将中断超过五分钟的 running 任务重新排队。默认最多尝试 5 次，退避从 30 秒开始、最长 1 小时，可通过 `CLEANUP_MAX_RETRIES` 和 `CLEANUP_RETRY_BASE_SECONDS` 调整。已有数据库依次执行 `sql/migrations/001_storage_cleanup_job.sql` 和 `sql/migrations/004_cleanup_retry_policy.sql`。
+若已经确认无人引用的本次上传对象无法立即从 FastDFS 删除，应用会按 `storage_key` 幂等写入 `storage_cleanup_job`。任务保存失败原因、重试次数、下次执行时间和 `pending/running/done/failed` 状态；Compose 中的 `cleanup_worker` 后台服务会持续领取任务，按指数退避重试删除，达到最大次数后进入 `failed`，并将中断超过五分钟的 running 任务重新排队。默认每 10 秒轮询、每轮最多处理 100 条、最多尝试 5 次，退避从 30 秒开始、最长 1 小时，可通过 `CLEANUP_POLL_INTERVAL_SECONDS`、`CLEANUP_MAX_RETRIES` 和 `CLEANUP_RETRY_BASE_SECONDS` 调整。已有数据库依次执行 `sql/migrations/001_storage_cleanup_job.sql` 和 `sql/migrations/004_cleanup_retry_policy.sql`。
 
 用户删除最后一条文件关系时，应用不会在 HTTP 请求的数据库事务中调用 FastDFS。它会锁定用户关系和 `file_info`，在同一个 MySQL 事务中删除分享、用户关系和零引用的 `file_info`，并写入 `last_reference_removed` 清理任务；提交后由 worker 异步删除旧 storage key。即使服务在提交后崩溃，任务仍可恢复；若相同 MD5 在 worker 执行前重新上传，新记录会获得新的 storage key，旧任务不会误删新对象。
 
@@ -96,7 +96,7 @@ Docker 守护进程运行后，在项目根目录执行：
 
 测试会启动 MySQL、Redis、FastDFS tracker/storage、C FastCGI 与 Nginx，覆盖注册、登录、Redis Token、真实文件上传、受控私有/分享下载及字节一致性、直链封锁、下载计数、提取码哈希与限错、上传事务入库、并发上传、跨用户 MD5 认领拒绝、验证后去重、分享过期、转存、并发重复转存、转存/撤销竞争、零引用物理回收、撤销、删除和退出登录。测试会确认多用户引用时不会误删；最后一个引用删除后任务可恢复；相同内容重新上传后，清理旧对象不会影响新对象。
 
-手动处理最多 100 个待清理 FastDFS 对象：
+`docker compose up -d --build` 会同时启动长期运行的 `cleanup_worker`。如需排障，也可以手动处理最多 100 个当前到期的 FastDFS 对象：
 
     docker compose -f docker/docker-compose.yml exec -T fastcgi_app \
       /app/bin_cgi/cleanup_worker 100
