@@ -321,3 +321,61 @@ done:
     if (connection) mysql_close(connection);
     return result;
 }
+
+int get_storage_cleanup_metrics(StorageCleanupMetrics *metrics)
+{
+    MYSQL *connection = NULL;
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND bind[7];
+    my_ulonglong values[7];
+    const char *sql =
+        "SELECT "
+        "COALESCE(SUM(status = 'pending'), 0), "
+        "COALESCE(SUM(status = 'pending' AND next_attempt_at <= CURRENT_TIMESTAMP), 0), "
+        "COALESCE(SUM(status = 'running'), 0), "
+        "COALESCE(SUM(status = 'done'), 0), "
+        "COALESCE(SUM(status = 'failed'), 0), "
+        "COALESCE(TIMESTAMPDIFF(SECOND, "
+        "MIN(CASE WHEN status = 'pending' THEN created_at END), CURRENT_TIMESTAMP), 0), "
+        "COALESCE(GREATEST(0, TIMESTAMPDIFF(SECOND, "
+        "MIN(CASE WHEN status = 'pending' AND next_attempt_at <= CURRENT_TIMESTAMP "
+        "THEN next_attempt_at END), CURRENT_TIMESTAMP)), 0) "
+        "FROM storage_cleanup_job";
+    int fetch_result;
+    int result = -1;
+    size_t index;
+
+    if (!metrics) return -1;
+    memset(metrics, 0, sizeof(*metrics));
+    memset(values, 0, sizeof(values));
+    connection = connect_database();
+    if (!connection) goto done;
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, sql, (unsigned long)strlen(sql)) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    memset(bind, 0, sizeof(bind));
+    for (index = 0; index < sizeof(bind) / sizeof(bind[0]); ++index) {
+        bind[index].buffer_type = MYSQL_TYPE_LONGLONG;
+        bind[index].buffer = &values[index];
+        bind[index].is_unsigned = 1;
+    }
+    if (mysql_stmt_bind_result(statement, bind) != 0 ||
+        mysql_stmt_store_result(statement) != 0) goto done;
+    fetch_result = mysql_stmt_fetch(statement);
+    if (fetch_result != 0) goto done;
+
+    metrics->pending_count = (unsigned long long)values[0];
+    metrics->ready_count = (unsigned long long)values[1];
+    metrics->running_count = (unsigned long long)values[2];
+    metrics->done_count = (unsigned long long)values[3];
+    metrics->failed_count = (unsigned long long)values[4];
+    metrics->oldest_pending_age_seconds = (unsigned long long)values[5];
+    metrics->oldest_ready_age_seconds = (unsigned long long)values[6];
+    result = 0;
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    if (connection) mysql_close(connection);
+    return result;
+}

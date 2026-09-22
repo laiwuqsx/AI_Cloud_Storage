@@ -100,3 +100,8 @@ Docker 守护进程运行后，在项目根目录执行：
 
     docker compose -f docker/docker-compose.yml exec -T fastcgi_app \
       /app/bin_cgi/cleanup_worker 100
+
+查看清理队列的 Prometheus 格式指标（各状态数量、可立即执行数量、最老 pending 年龄和最老 ready 逾期时间）：
+
+    docker compose -f docker/docker-compose.yml exec -T cleanup_worker \
+      /app/bin_cgi/cleanup_metrics

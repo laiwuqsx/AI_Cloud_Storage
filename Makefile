@@ -42,7 +42,7 @@ $(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_
 $(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
-integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker
+integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics
 
 $(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
@@ -54,6 +54,9 @@ $(BIN_DIR)/share_save_probe: tests/share_save_probe.c $(FILE_REPOSITORY) common/
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
+
+$(BIN_DIR)/cleanup_metrics: tools/cleanup_metrics.c common/cleanup_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR):

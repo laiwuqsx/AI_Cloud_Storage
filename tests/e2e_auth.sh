@@ -392,6 +392,18 @@ failed_cleanup_state=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     sh "$failed_cleanup_key")
 [ "$failed_cleanup_state" = "failed|1" ] || \
     fail "cleanup worker retry limit state: $failed_cleanup_state"
+cleanup_metrics_output=$(docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/cleanup_metrics) || fail "cleanup metrics command"
+failed_cleanup_metric=$(printf '%s\n' "$cleanup_metrics_output" | awk \
+    '$1 == "ai_cloud_storage_cleanup_jobs{status=\"failed\"}" { print $2 }')
+case "$failed_cleanup_metric" in
+    ''|*[!0-9]*) fail "cleanup failed metric format: $failed_cleanup_metric" ;;
+esac
+[ "$failed_cleanup_metric" -ge 1 ] || \
+    fail "cleanup failed metric did not include fixture: $failed_cleanup_metric"
+printf '%s\n' "$cleanup_metrics_output" | \
+    grep -q '^ai_cloud_storage_cleanup_oldest_pending_age_seconds [0-9][0-9]*$' || \
+    fail "cleanup oldest pending metric missing"
 docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM storage_cleanup_job WHERE storage_key = '\''$1'\'';"' \
     sh "$failed_cleanup_key" || fail "failed cleanup fixture database cleanup"
