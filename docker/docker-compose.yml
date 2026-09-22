@@ -79,6 +79,9 @@ services:
       FASTDFS_PUBLIC_BASE_URL: ${FASTDFS_PUBLIC_BASE_URL:-http://localhost:8080/storage}
       CLEANUP_MAX_RETRIES: ${CLEANUP_MAX_RETRIES:-5}
       CLEANUP_RETRY_BASE_SECONDS: ${CLEANUP_RETRY_BASE_SECONDS:-30}
+      CHUNK_UPLOAD_DIR: /data/chunk-uploads
+    volumes:
+      - chunk_upload_data:/data/chunk-uploads
     depends_on:
       mysql:
         condition: service_healthy
@@ -132,3 +135,4 @@ volumes:
   fastdfs_tracker_data:
   fastdfs_storage_meta:
   fastdfs_storage_data:
+  chunk_upload_data:

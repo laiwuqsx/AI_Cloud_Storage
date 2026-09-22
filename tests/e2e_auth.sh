@@ -16,6 +16,9 @@ upload_fixture=$(mktemp)
 downloaded_fixture=$(mktemp)
 race_fixture=$(mktemp)
 reclaim_fixture=$(mktemp)
+chunk_fixture=$(mktemp)
+chunk_conflict_fixture=$(mktemp)
+chunk_last_fixture=$(mktemp)
 race_response_file_a=$(mktemp)
 race_response_file_b=$(mktemp)
 save_response_file_a=$(mktemp)
@@ -25,12 +28,27 @@ cancel_save_response_file=$(mktemp)
 
 cleanup() {
     rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" "$reclaim_fixture" \
+        "$chunk_fixture" "$chunk_conflict_fixture" "$chunk_last_fixture" \
         "$race_response_file_a" "$race_response_file_b" \
         "$save_response_file_a" "$save_response_file_b" \
         "$cancel_response_file" "$cancel_save_response_file"
 }
 
 trap cleanup EXIT HUP INT TERM
+
+dd if=/dev/zero of="$chunk_fixture" bs=1048576 count=1 2>/dev/null
+cp "$chunk_fixture" "$chunk_conflict_fixture"
+printf 'x' | dd of="$chunk_conflict_fixture" bs=1 count=1 conv=notrunc 2>/dev/null
+printf '0123456789abcdef\n' > "$chunk_last_fixture"
+if command -v md5sum >/dev/null 2>&1; then
+    chunk_md5=$(md5sum "$chunk_fixture" | awk '{print $1}')
+    chunk_conflict_md5=$(md5sum "$chunk_conflict_fixture" | awk '{print $1}')
+    chunk_last_md5=$(md5sum "$chunk_last_fixture" | awk '{print $1}')
+else
+    chunk_md5=$(md5 -q "$chunk_fixture")
+    chunk_conflict_md5=$(md5 -q "$chunk_conflict_fixture")
+    chunk_last_md5=$(md5 -q "$chunk_last_fixture")
+fi
 
 printf 'FastDFS upload fixture for %s\n' "$user_name" > "$upload_fixture"
 upload_size=$(wc -c < "$upload_fixture" | tr -d '[:space:]')
@@ -115,6 +133,14 @@ if [ "$chunk_session_table_count" = "0" ]; then
         < sql/migrations/005_chunk_upload_session.sql || fail "chunk upload session migration"
 fi
 
+chunk_part_table_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '\''chunk_upload_part'\'';"')
+if [ "$chunk_part_table_count" = "0" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/006_chunk_upload_part.sql || fail "chunk upload part migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -142,7 +168,7 @@ stored_user=$(docker compose -f "$compose_file" exec -T redis \
 
 invalid_chunk_init_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
-    --data "{\"user\":\"$user_name\",\"token\":\"invalid\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":10485761,\"chunk_size\":5242880}" \
+    --data "{\"user\":\"$user_name\",\"token\":\"invalid\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":1048593,\"chunk_size\":1048576}" \
     "$base_url/api/uploads/init")
 case "$invalid_chunk_init_response" in
     *'"code":2'*'"msg":"token error"'*) ;;
@@ -151,10 +177,10 @@ esac
 
 chunk_init_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
-    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":10485761,\"chunk_size\":5242880}" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":1048593,\"chunk_size\":1048576}" \
     "$base_url/api/uploads/init")
 case "$chunk_init_response" in
-    *'"code":0'*'"chunk_size":5242880'*'"total_chunks":3'*'"uploaded_chunks":[]'*) ;;
+    *'"code":0'*'"chunk_size":1048576'*'"total_chunks":2'*'"uploaded_chunks":[]'*) ;;
     *) fail "chunk init response: $chunk_init_response" ;;
 esac
 chunk_upload_id=$(printf '%s' "$chunk_init_response" | \
@@ -164,8 +190,88 @@ printf '%s\n' "$chunk_upload_id" | grep -q '^[0-9a-f]\{64\}$' || \
 chunk_session_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(user_name, CHAR(124), file_name, CHAR(124), file_md5, CHAR(124), total_size, CHAR(124), chunk_size, CHAR(124), total_chunks, CHAR(124), status, CHAR(124), expires_at > CURRENT_TIMESTAMP) FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
     sh "$chunk_upload_id")
-[ "$chunk_session_row" = "$user_name|large-video.mp4|$missing_md5|10485761|5242880|3|receiving|1" ] || \
+[ "$chunk_session_row" = "$user_name|large-video.mp4|$missing_md5|1048593|1048576|2|receiving|1" ] || \
     fail "chunk upload session database state: $chunk_session_row"
+
+unauthorized_chunk_response=$(curl --silent --show-error --request PUT \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: invalid" \
+    --header "X-Chunk-MD5: $chunk_md5" \
+    --data-binary "@$chunk_fixture" \
+    "$base_url/api/uploads/$chunk_upload_id/chunks/0")
+case "$unauthorized_chunk_response" in
+    *'"code":2'*'"msg":"token error"'*) ;;
+    *) fail "unauthorized chunk response: $unauthorized_chunk_response" ;;
+esac
+
+chunk_upload_response=$(curl --silent --show-error --request PUT \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Chunk-MD5: $chunk_md5" \
+    --data-binary "@$chunk_fixture" \
+    "$base_url/api/uploads/$chunk_upload_id/chunks/0")
+case "$chunk_upload_response" in
+    *'"code":0'*'"chunk_index":0'*'"idempotent":false'*) ;;
+    *) fail "chunk upload response: $chunk_upload_response" ;;
+esac
+
+chunk_retry_response=$(curl --silent --show-error --request PUT \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Chunk-MD5: $chunk_md5" \
+    --data-binary "@$chunk_fixture" \
+    "$base_url/api/uploads/$chunk_upload_id/chunks/0")
+case "$chunk_retry_response" in
+    *'"code":0'*'"chunk_index":0'*'"idempotent":true'*) ;;
+    *) fail "idempotent chunk retry response: $chunk_retry_response" ;;
+esac
+
+chunk_conflict_response=$(curl --silent --show-error --request PUT \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Chunk-MD5: $chunk_conflict_md5" \
+    --data-binary "@$chunk_conflict_fixture" \
+    "$base_url/api/uploads/$chunk_upload_id/chunks/0")
+case "$chunk_conflict_response" in
+    *'"code":6'*'different content'*) ;;
+    *) fail "conflicting chunk retry response: $chunk_conflict_response" ;;
+esac
+
+chunk_last_response=$(curl --silent --show-error --request PUT \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    --header "X-Chunk-MD5: $chunk_last_md5" \
+    --data-binary "@$chunk_last_fixture" \
+    "$base_url/api/uploads/$chunk_upload_id/chunks/1")
+case "$chunk_last_response" in
+    *'"code":0'*'"chunk_index":1'*'"idempotent":false'*) ;;
+    *) fail "last chunk upload response: $chunk_last_response" ;;
+esac
+
+chunk_part_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(COUNT(*), CHAR(124), size, CHAR(124), chunk_md5, CHAR(124), status, CHAR(124), stored_path) FROM chunk_upload_part WHERE upload_id = '\''$1'\'' AND chunk_index = 0 GROUP BY size, chunk_md5, status, stored_path;"' \
+    sh "$chunk_upload_id")
+case "$chunk_part_row" in
+    "1|1048576|$chunk_md5|ready|"*) ;;
+    *) fail "chunk part database state: $chunk_part_row" ;;
+esac
+chunk_stored_path=${chunk_part_row##*|}
+chunk_last_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(COUNT(*), CHAR(124), size, CHAR(124), chunk_md5, CHAR(124), status, CHAR(124), stored_path) FROM chunk_upload_part WHERE upload_id = '\''$1'\'' AND chunk_index = 1 GROUP BY size, chunk_md5, status, stored_path;"' \
+    sh "$chunk_upload_id")
+case "$chunk_last_row" in
+    "1|17|$chunk_last_md5|ready|"*) ;;
+    *) fail "last chunk database state: $chunk_last_row" ;;
+esac
+chunk_last_stored_path=${chunk_last_row##*|}
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    test -f "$chunk_stored_path" || fail "chunk file was not stored"
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    test -f "$chunk_last_stored_path" || fail "last chunk file was not stored"
+docker compose -f "$compose_file" exec -T fastcgi_app sh -c \
+    'rm -f "$1" "$2"; rmdir "${1%/*}"' sh \
+    "$chunk_stored_path" "$chunk_last_stored_path" || \
+    fail "chunk file cleanup"
 docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
     sh "$chunk_upload_id" || fail "chunk upload session cleanup"
