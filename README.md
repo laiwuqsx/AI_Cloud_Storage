@@ -10,7 +10,7 @@
 Nginx -> C FastCGI -> MySQL / Redis
 ```
 
-已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传、受控私有/分享下载、逻辑删除、可撤销/可过期的随机分享链接、可选提取码，以及登录后转存。大文件分片上传、前端和 FAISS 检索仍在后续阶段。
+已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传、受控私有/分享下载、逻辑删除、可撤销/可过期的随机分享链接、可选提取码，以及登录后转存。大文件分片上传已完成会话初始化，分片接收、合并、前端和 FAISS 检索仍在后续阶段。
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交。两个用户同时上传相同内容时，由 `file_info.md5` 唯一约束裁决胜者；失败方删除自己多上传的 FastDFS 对象，再以事务关联胜出的物理文件并增加引用数。两个请求最终关联同一个 storage key。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
@@ -78,6 +78,7 @@ make test
 - POST /api/login：登录。成功后在 Redis 保存会话并返回 Token。
 - POST /api/myfiles：携带 user 和 Token，返回当前用户的文件元数据列表。
 - POST /api/upload：流式接收并验证文件，成功响应返回 `/api/download`，不返回可绕过鉴权的存储直链。
+- POST /api/uploads/init：创建 24 小时有效的分片上传会话。JSON 包含 `user`、`token`、`file_name`、`md5`、`total_size` 和 `chunk_size`；成功返回随机 `upload_id`、总分片数和当前已上传分片（第一阶段恒为空）。当前只实现初始化，尚不能提交或合并分片。
 - POST /api/download：携带 user、Token 和 md5，校验当前用户所有权后下载文件。
 - POST /api/md5：安全上传预检。`code=1` 表示当前用户未拥有，必须普通上传并由服务端验证内容；全局文件存在与否返回相同结果。`code=3` 表示请求错误；`code=4` 表示 Token 无效；`code=5` 表示用户已经拥有；`code=6` 表示数据库故障。
 - POST /api/dealfile?cmd=del：携带 user、Token、md5，事务删除当前用户关系；最后一个引用会同时删除 `file_info` 并持久化异步物理清理任务。

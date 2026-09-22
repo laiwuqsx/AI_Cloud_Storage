@@ -107,6 +107,14 @@ if [ "$cleanup_retry_column_count" = "0" ]; then
         < sql/migrations/004_cleanup_retry_policy.sql || fail "cleanup retry policy migration"
 fi
 
+chunk_session_table_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '\''chunk_upload_session'\'';"')
+if [ "$chunk_session_table_count" = "0" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/005_chunk_upload_session.sql || fail "chunk upload session migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
@@ -131,6 +139,36 @@ token=$(printf "%s" "$login_response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 stored_user=$(docker compose -f "$compose_file" exec -T redis \
     redis-cli --raw GET "token:$token")
 [ "$stored_user" = "$user_name" ] || fail "Redis session does not match user"
+
+invalid_chunk_init_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"invalid\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":10485761,\"chunk_size\":5242880}" \
+    "$base_url/api/uploads/init")
+case "$invalid_chunk_init_response" in
+    *'"code":2'*'"msg":"token error"'*) ;;
+    *) fail "unauthorized chunk init response: $invalid_chunk_init_response" ;;
+esac
+
+chunk_init_response=$(curl --silent --show-error --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":10485761,\"chunk_size\":5242880}" \
+    "$base_url/api/uploads/init")
+case "$chunk_init_response" in
+    *'"code":0'*'"chunk_size":5242880'*'"total_chunks":3'*'"uploaded_chunks":[]'*) ;;
+    *) fail "chunk init response: $chunk_init_response" ;;
+esac
+chunk_upload_id=$(printf '%s' "$chunk_init_response" | \
+    sed -n 's/.*"upload_id":"\([^"]*\)".*/\1/p')
+printf '%s\n' "$chunk_upload_id" | grep -q '^[0-9a-f]\{64\}$' || \
+    fail "chunk upload id format: $chunk_upload_id"
+chunk_session_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(user_name, CHAR(124), file_name, CHAR(124), file_md5, CHAR(124), total_size, CHAR(124), chunk_size, CHAR(124), total_chunks, CHAR(124), status, CHAR(124), expires_at > CURRENT_TIMESTAMP) FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
+    sh "$chunk_upload_id")
+[ "$chunk_session_row" = "$user_name|large-video.mp4|$missing_md5|10485761|5242880|3|receiving|1" ] || \
+    fail "chunk upload session database state: $chunk_session_row"
+docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
+    sh "$chunk_upload_id" || fail "chunk upload session cleanup"
 
 upload_response=$(curl --silent --show-error --request POST \
     --header "X-Upload-User: $user_name" \

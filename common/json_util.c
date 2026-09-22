@@ -1,7 +1,9 @@
 #include "json_util.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *skip_spaces(const char *p)
@@ -74,5 +76,31 @@ int json_get_string(const char *json, const char *key, char *out, size_t out_siz
     }
     memcpy(out, value_start, length);
     out[length] = '\0';
+    return 0;
+}
+
+int json_get_uint64(const char *json, const char *key, uint64_t *out)
+{
+    char pattern[128];
+    char *end;
+    const char *cursor;
+    unsigned long long value;
+
+    if (!json || !key || !out || !json_is_valid_object(json)) return -1;
+    if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern)) {
+        return -1;
+    }
+    cursor = strstr(json, pattern);
+    if (!cursor) return -1;
+    cursor = skip_spaces(cursor + strlen(pattern));
+    if (*cursor != ':') return -1;
+    cursor = skip_spaces(cursor + 1);
+    if (!isdigit((unsigned char)*cursor)) return -1;
+    errno = 0;
+    value = strtoull(cursor, &end, 10);
+    if (errno != 0 || end == cursor) return -1;
+    cursor = skip_spaces(end);
+    if (*cursor != ',' && *cursor != '}') return -1;
+    *out = (uint64_t)value;
     return 0;
 }
