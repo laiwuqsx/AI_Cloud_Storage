@@ -17,6 +17,16 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+function memoryStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+    values,
+  };
+}
+
 test("incremental MD5 matches standard vectors and Blob block boundaries", async () => {
   const context = new IncrementalMd5();
   context.update(new TextEncoder().encode("hello "));
@@ -41,12 +51,14 @@ test("large files follow init, ordered chunks, progress and complete", async () 
     return jsonResponse(responses.shift());
   };
   const progress = [];
+  const storage = memoryStorage();
   const client = createUploadClient({
     baseUrl: "http://files.test/",
     chunkThreshold: 5,
     chunkSize: 4,
     hashBlockSize: 3,
     fetchImpl,
+    storage,
   });
   const file = namedBlob(["abcdefghij"], "demo.bin");
   const result = await client.upload(file, { user: "alice", token: "token" }, {
@@ -66,6 +78,141 @@ test("large files follow init, ordered chunks, progress and complete", async () 
   assert.deepEqual(progress.filter(({ phase }) => phase === "uploading")
     .map(({ loaded }) => loaded), [4, 8, 10]);
   assert.equal(progress.at(-1).phase, "completed");
+  assert.equal(storage.values.size, 0);
+});
+
+test("saved sessions query server state and upload only missing chunks", async () => {
+  const uploadId = "b".repeat(64);
+  const fileMd5 = "a925576942e94b2ef57a066101b48876";
+  const key = `ai-cloud-upload-v1:alice:${fileMd5}:10:demo.bin`;
+  const storage = memoryStorage({
+    [key]: JSON.stringify({
+      uploadId,
+      fileName: "demo.bin",
+      fileSize: 10,
+      fileMd5,
+      chunkSize: 4,
+      totalChunks: 3,
+    }),
+  });
+  const calls = [];
+  const responses = [
+    { code: 0, file_name: "demo.bin", md5: fileMd5, total_size: 10,
+      chunk_size: 4, total_chunks: 3, status: "receiving", uploaded_chunks: [0, 2] },
+    { code: 0, chunk_index: 1 },
+    { code: 0, msg: "upload complete" },
+  ];
+  const client = createUploadClient({
+    chunkThreshold: 5,
+    chunkSize: 4,
+    hashBlockSize: 3,
+    storage,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse(responses.shift());
+    },
+  });
+  const result = await client.upload(namedBlob(["abcdefghij"], "demo.bin"),
+    { user: "alice", token: "token" });
+
+  assert.equal(result.resumed, true);
+  assert.deepEqual(calls.map(({ url }) => url), [
+    `/api/uploads/${uploadId}`,
+    `/api/uploads/${uploadId}/chunks/1`,
+    `/api/uploads/${uploadId}/complete`,
+  ]);
+  assert.equal(calls[1].options.body.size, 4);
+  assert.equal(storage.values.size, 0);
+});
+
+test("expired saved sessions are replaced with a fresh initialized session", async () => {
+  const oldUploadId = "c".repeat(64);
+  const newUploadId = "d".repeat(64);
+  const fileMd5 = "a925576942e94b2ef57a066101b48876";
+  const key = `ai-cloud-upload-v1:alice:${fileMd5}:10:demo.bin`;
+  const storage = memoryStorage({
+    [key]: JSON.stringify({ uploadId: oldUploadId, chunkSize: 4, totalChunks: 3 }),
+  });
+  const calls = [];
+  const responses = [
+    { code: 4, msg: "chunk upload session unavailable" },
+    { code: 0, upload_id: newUploadId, chunk_size: 4, total_chunks: 3,
+      uploaded_chunks: [] },
+    { code: 0 }, { code: 0 }, { code: 0 }, { code: 0, msg: "upload complete" },
+  ];
+  const client = createUploadClient({
+    chunkThreshold: 5,
+    chunkSize: 4,
+    storage,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse(responses.shift());
+    },
+  });
+
+  await client.upload(namedBlob(["abcdefghij"], "demo.bin"),
+    { user: "alice", token: "token" });
+  assert.equal(calls[0].url, `/api/uploads/${oldUploadId}`);
+  assert.equal(calls[1].url, "/api/uploads/init");
+  assert.equal(storage.values.size, 0);
+});
+
+test("completed sessions recover a lost complete response without re-uploading", async () => {
+  const uploadId = "e".repeat(64);
+  const fileMd5 = "a925576942e94b2ef57a066101b48876";
+  const key = `ai-cloud-upload-v1:alice:${fileMd5}:10:demo.bin`;
+  const storage = memoryStorage({
+    [key]: JSON.stringify({ uploadId, chunkSize: 4, totalChunks: 3 }),
+  });
+  const calls = [];
+  const client = createUploadClient({
+    chunkThreshold: 5,
+    storage,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({
+        code: 0,
+        file_name: "demo.bin",
+        md5: fileMd5,
+        total_size: 10,
+        chunk_size: 4,
+        total_chunks: 3,
+        status: "completed",
+        uploaded_chunks: [0, 1, 2],
+      });
+    },
+  });
+  const result = await client.upload(namedBlob(["abcdefghij"], "demo.bin"),
+    { user: "alice", token: "token" });
+
+  assert.equal(result.msg, "upload already completed");
+  assert.equal(result.resumed, true);
+  assert.equal(calls.length, 1);
+  assert.equal(storage.values.size, 0);
+});
+
+test("failed completion keeps the saved session for a later resume", async () => {
+  const storage = memoryStorage();
+  const uploadId = "f".repeat(64);
+  const responses = [
+    { code: 0, upload_id: uploadId, chunk_size: 4, total_chunks: 2,
+      uploaded_chunks: [] },
+    { code: 0 }, { code: 0 },
+    { code: 7, msg: "storage upload failed" },
+  ];
+  const client = createUploadClient({
+    chunkThreshold: 3,
+    chunkSize: 4,
+    storage,
+    fetchImpl: async () => jsonResponse(responses.shift()),
+  });
+
+  await assert.rejects(
+    client.upload(namedBlob(["abcdefgh"], "keep.bin"),
+      { user: "alice", token: "token" }),
+    (error) => error instanceof UploadError && error.code === 7,
+  );
+  assert.equal(storage.values.size, 1);
 });
 
 test("small files use the existing multipart endpoint", async () => {

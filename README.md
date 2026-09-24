@@ -38,7 +38,7 @@ FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upl
 
 分片上传使用 `POST /api/uploads/init` 创建 24 小时有效的会话，再以 `PUT /api/uploads/{upload_id}/chunks/{index}` 上传原始分片字节。每个请求按会话所有者、索引范围、精确分片大小和 `X-Chunk-MD5` 校验；分片先流式写入随机临时文件，再以原子硬链接安装到独立 Docker 数据卷。MySQL 的 `chunk_upload_part` 用 `staging -> ready` 记录落盘状态：相同索引和内容重复上传会幂等成功，不同内容占用同一索引会返回冲突。全部分片就绪后，`POST /api/uploads/{upload_id}/complete` 会原子认领会话、按序流式合并、重新校验整文件大小和 MD5，并复用普通首次上传的 FastDFS 与数据库事务/失败补偿流程；只有最终文件提交成功后才删除本地分片。已有数据库需依次执行 `sql/migrations/005_chunk_upload_session.sql` 和 `sql/migrations/006_chunk_upload_part.sql`。
 
-浏览器客户端模块 `client/upload_client.mjs` 会先以增量 MD5 扫描文件：不超过 10 MiB 时调用现有 multipart 接口，超过阈值时自动执行初始化、顺序切片、逐片 MD5、分片上传和 complete。模块不依赖前端框架，并通过 `onProgress` 报告 `hashing`、`uploading`、`completing`、`completed` 阶段。运行 `make test-client` 可执行浏览器协议模拟测试。
+浏览器客户端模块 `client/upload_client.mjs` 会先以增量 MD5 扫描文件：不超过 10 MiB 时调用现有 multipart 接口，超过阈值时自动执行初始化、顺序切片、逐片 MD5、分片上传和 complete。大文件初始化后会按用户、文件名、大小和 MD5 将 `upload_id` 保存到 `localStorage`（不保存 Token）；再次选择同一文件时先查询服务端状态，只补传缺失的 ready 分片。会话已完成时直接收敛为成功，已失效时自动创建新会话，complete 成功后清除本地记录。模块不依赖前端框架，并通过 `onProgress` 报告 `hashing`、`uploading`、`completing`、`completed` 阶段。运行 `make test-client` 可执行浏览器协议模拟测试。
 
 ```js
 import { createUploadClient } from "./client/upload_client.mjs";
