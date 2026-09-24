@@ -7,15 +7,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#include "chunk_assembler.h"
 #include "chunk_upload_repository.h"
 #include "chunk_storage.h"
+#include "cleanup_repository.h"
+#include "fastdfs_storage_client.h"
+#include "file_repository.h"
 #include "http_response.h"
 #include "json_util.h"
 #include "runtime_config.h"
 #include "token_service.h"
 #include "upload_id.h"
 #include "upload_intake.h"
+#include "upload_service.h"
 #include "user_validation.h"
 
 #define MAX_BODY_SIZE 4096
@@ -42,7 +48,9 @@ enum {
     CHUNK_UPLOAD_SESSION_UNAVAILABLE = 4,
     CHUNK_UPLOAD_RECEIVE_ERROR = 5,
     CHUNK_UPLOAD_CONFLICT = 6,
-    CHUNK_UPLOAD_STORAGE_ERROR = 7
+    CHUNK_UPLOAD_STORAGE_ERROR = 7,
+    CHUNK_UPLOAD_INCOMPLETE = 8,
+    CHUNK_UPLOAD_COMMIT_UNRESOLVED = 9
 };
 
 static int read_body(char body[MAX_BODY_SIZE])
@@ -183,6 +191,22 @@ static int parse_status_path(const char *path,
     if (!validate_upload_id(value)) return -1;
     memcpy(upload_id, value, UPLOAD_ID_HEX_LENGTH + 1);
     return 0;
+}
+
+static int parse_complete_path(const char *path,
+                               char upload_id[UPLOAD_ID_HEX_LENGTH + 1])
+{
+    static const char prefix[] = "/api/uploads/";
+    static const char suffix[] = "/complete";
+    const char *value;
+
+    if (!path || strncmp(path, prefix, sizeof(prefix) - 1) != 0) return -1;
+    value = path + sizeof(prefix) - 1;
+    if (strlen(value) != UPLOAD_ID_HEX_LENGTH + sizeof(suffix) - 1 ||
+        strcmp(value + UPLOAD_ID_HEX_LENGTH, suffix) != 0) return -1;
+    memcpy(upload_id, value, UPLOAD_ID_HEX_LENGTH);
+    upload_id[UPLOAD_ID_HEX_LENGTH] = '\0';
+    return validate_upload_id(upload_id) ? 0 : -1;
 }
 
 static void write_json_string(const char *value)
@@ -396,6 +420,219 @@ static void handle_chunk_request(const char *path)
                         reserve_result != RESERVE_CHUNK_PART_NEW || install_result == 1);
 }
 
+static RecordNewFileResult repository_record(void *unused, const NewFileRecord *record)
+{
+    (void)unused;
+    return record_new_file_upload(record);
+}
+
+static int repository_confirm(void *unused, const char *user_name, const char *md5,
+                              const char *storage_key)
+{
+    (void)unused;
+    return confirm_new_file_upload(user_name, md5, storage_key);
+}
+
+static ClaimFileResult repository_claim_existing(void *unused, const char *user_name,
+                                                 const char *md5, const char *file_name,
+                                                 StoredObject *stored_object)
+{
+    FileLocation location;
+    ClaimFileResult result;
+
+    (void)unused;
+    result = claim_existing_file_with_location(user_name, md5, file_name, &location);
+    if ((result == CLAIM_FILE_LINKED || result == CLAIM_FILE_ALREADY_OWNED) &&
+        stored_object) {
+        memcpy(stored_object->storage_key, location.storage_key,
+               strlen(location.storage_key) + 1);
+        memcpy(stored_object->url, location.url, strlen(location.url) + 1);
+    }
+    return result;
+}
+
+static int repository_schedule_cleanup(void *unused, const char *storage_key,
+                                       const char *reason, const char *last_error)
+{
+    (void)unused;
+    return enqueue_storage_cleanup(storage_key, reason, last_error);
+}
+
+static void file_type_from_name(const char *file_name, char output[33])
+{
+    const char *dot = strrchr(file_name, '.');
+    size_t index, length;
+
+    output[0] = '\0';
+    if (!dot || dot == file_name || dot[1] == '\0') return;
+    length = strlen(++dot);
+    if (length > 32) return;
+    for (index = 0; index < length; ++index) {
+        if (!isalnum((unsigned char)dot[index])) {
+            output[0] = '\0';
+            return;
+        }
+        output[index] = (char)tolower((unsigned char)dot[index]);
+    }
+    output[length] = '\0';
+}
+
+static void cleanup_completed_parts(const ChunkUploadCompletion *completion)
+{
+    char directory[CHUNK_STORED_PATH_CAPACITY];
+    char *slash;
+    unsigned int index;
+
+    if (!completion || !completion->parts || completion->total_chunks == 0) return;
+    for (index = 0; index < completion->total_chunks; ++index) {
+        if (unlink(completion->parts[index].stored_path) != 0 && errno != ENOENT) {
+            fprintf(stderr, "unable to remove completed chunk %s\n",
+                    completion->parts[index].stored_path);
+        }
+    }
+    memcpy(directory, completion->parts[0].stored_path,
+           strlen(completion->parts[0].stored_path) + 1);
+    slash = strrchr(directory, '/');
+    if (slash) {
+        *slash = '\0';
+        if (rmdir(directory) != 0 && errno != ENOENT && errno != ENOTEMPTY) {
+            fprintf(stderr, "unable to remove chunk directory %s\n", directory);
+        }
+    }
+}
+
+static void write_completion_error(FirstUploadResult result)
+{
+    if (result == FIRST_UPLOAD_STORAGE_FAILED) {
+        write_json_response(CHUNK_UPLOAD_STORAGE_ERROR, "storage upload failed", NULL);
+    } else if (result == FIRST_UPLOAD_COMMIT_UNRESOLVED) {
+        write_json_response(CHUNK_UPLOAD_COMMIT_UNRESOLVED,
+                            "database commit could not be confirmed", NULL);
+    } else if (result == FIRST_UPLOAD_CLEANUP_FAILED) {
+        write_json_response(CHUNK_UPLOAD_STORAGE_ERROR,
+                            "uploaded object cleanup failed", NULL);
+    } else {
+        write_json_response(CHUNK_UPLOAD_DATABASE_ERROR,
+                            "database transaction failed", NULL);
+    }
+}
+
+static void handle_complete_request(const char *path)
+{
+    const char *method = getenv("REQUEST_METHOD");
+    const char *user = getenv("HTTP_X_UPLOAD_USER");
+    const char *token = getenv("HTTP_X_UPLOAD_TOKEN");
+    const char *chunk_root = runtime_config_get("CHUNK_UPLOAD_DIR", "/data/chunk-uploads");
+    const char *fastdfs_config = runtime_config_get("FASTDFS_CLIENT_CONFIG", NULL);
+    const char *public_base_url = runtime_config_get("FASTDFS_PUBLIC_BASE_URL", NULL);
+    char upload_id[UPLOAD_ID_HEX_LENGTH + 1];
+    char file_type[33];
+    ChunkUploadCompletion completion;
+    ClaimChunkCompletionResult claim_result;
+    ChunkAssemblyPart *parts = NULL;
+    ReceivedUpload assembled;
+    FastDfsStorageContext fastdfs_context;
+    StorageClient storage;
+    UploadRepository repository = {
+        .context = NULL,
+        .record = repository_record,
+        .confirm = repository_confirm,
+        .claim_existing = repository_claim_existing,
+        .schedule_cleanup = repository_schedule_cleanup
+    };
+    FirstUploadRequest request;
+    FirstUploadResult upload_result;
+    unsigned int index;
+
+    if (!method || strcmp(method, "POST") != 0 ||
+        parse_complete_path(path, upload_id) != 0 || !validate_username(user) ||
+        !fastdfs_config || fastdfs_config[0] == '\0' ||
+        !public_base_url || public_base_url[0] == '\0') {
+        write_json_response(CHUNK_UPLOAD_INVALID_REQUEST,
+                            "invalid completion request", NULL);
+        return;
+    }
+    if (verify_session_token(user, token) != 0) {
+        write_json_response(CHUNK_UPLOAD_TOKEN_ERROR, "token error", NULL);
+        return;
+    }
+    claim_result = claim_chunk_upload_completion(upload_id, user, &completion);
+    if (claim_result == CLAIM_CHUNK_COMPLETION_ALREADY_COMPLETED) {
+        write_json_response(CHUNK_UPLOAD_OK, "upload already completed",
+                            "\"download_api\":\"/api/download\"");
+        return;
+    }
+    if (claim_result == CLAIM_CHUNK_COMPLETION_INCOMPLETE) {
+        write_json_response(CHUNK_UPLOAD_INCOMPLETE, "chunks incomplete", NULL);
+        return;
+    }
+    if (claim_result == CLAIM_CHUNK_COMPLETION_UNAVAILABLE) {
+        write_json_response(CHUNK_UPLOAD_SESSION_UNAVAILABLE,
+                            "chunk upload session unavailable", NULL);
+        return;
+    }
+    if (claim_result != CLAIM_CHUNK_COMPLETION_OK) {
+        write_json_response(CHUNK_UPLOAD_DATABASE_ERROR, "database error", NULL);
+        return;
+    }
+
+    parts = calloc(completion.total_chunks, sizeof(*parts));
+    if (!parts) goto preparation_failed;
+    for (index = 0; index < completion.total_chunks; ++index) {
+        parts[index].path = completion.parts[index].stored_path;
+        parts[index].size = completion.parts[index].size;
+    }
+    if (assemble_chunk_upload(parts, completion.total_chunks, chunk_root,
+                              completion.total_size, completion.file_md5,
+                              &assembled) != CHUNK_ASSEMBLY_OK) goto preparation_failed;
+    free(parts);
+    parts = NULL;
+
+    fastdfs_storage_context_init(&fastdfs_context, fastdfs_config, public_base_url);
+    if (fastdfs_storage_client_init(&storage, &fastdfs_context) != 0) {
+        received_upload_discard(&assembled);
+        finish_chunk_upload_completion(upload_id, user, 0);
+        free_chunk_upload_completion(&completion);
+        write_json_response(CHUNK_UPLOAD_STORAGE_ERROR,
+                            "storage configuration error", NULL);
+        return;
+    }
+    file_type_from_name(completion.file_name, file_type);
+    request.local_path = assembled.path;
+    request.user_name = user;
+    request.md5 = assembled.md5;
+    request.file_name = completion.file_name;
+    request.type = file_type;
+    request.size = assembled.size;
+    upload_result = execute_first_upload(&storage, &repository, &request, NULL);
+    received_upload_discard(&assembled);
+    if (upload_result != FIRST_UPLOAD_OK) {
+        finish_chunk_upload_completion(upload_id, user, 0);
+        free_chunk_upload_completion(&completion);
+        write_completion_error(upload_result);
+        return;
+    }
+    if (finish_chunk_upload_completion(upload_id, user, 1) != 0) {
+        finish_chunk_upload_completion(upload_id, user, 0);
+        free_chunk_upload_completion(&completion);
+        write_json_response(CHUNK_UPLOAD_DATABASE_ERROR,
+                            "unable to finalize upload session", NULL);
+        return;
+    }
+    cleanup_completed_parts(&completion);
+    free_chunk_upload_completion(&completion);
+    write_json_response(CHUNK_UPLOAD_OK, "upload complete",
+                        "\"download_api\":\"/api/download\"");
+    return;
+
+preparation_failed:
+    free(parts);
+    finish_chunk_upload_completion(upload_id, user, 0);
+    free_chunk_upload_completion(&completion);
+    write_json_response(CHUNK_UPLOAD_RECEIVE_ERROR,
+                        "chunk assembly or file verification failed", NULL);
+}
+
 int main(void)
 {
     runtime_config_init();
@@ -404,6 +641,8 @@ int main(void)
 
         if (path && strcmp(path, "/api/uploads/init") == 0) {
             handle_init_request();
+        } else if (path && strstr(path, "/complete") != NULL) {
+            handle_complete_request(path);
         } else if (path && strstr(path, "/chunks/") != NULL) {
             handle_chunk_request(path);
         } else {

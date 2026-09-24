@@ -73,6 +73,27 @@ typedef struct {
     const char *stored_path;
 } ChunkUploadPart;
 
+typedef struct {
+    char stored_path[CHUNK_STORED_PATH_CAPACITY];
+    uint64_t size;
+} ChunkUploadCompletionPart;
+
+typedef struct {
+    char file_name[CHUNK_UPLOAD_FILE_NAME_CAPACITY];
+    char file_md5[CHUNK_UPLOAD_MD5_CAPACITY];
+    uint64_t total_size;
+    unsigned int total_chunks;
+    ChunkUploadCompletionPart *parts;
+} ChunkUploadCompletion;
+
+typedef enum {
+    CLAIM_CHUNK_COMPLETION_OK = 0,
+    CLAIM_CHUNK_COMPLETION_INCOMPLETE = 1,
+    CLAIM_CHUNK_COMPLETION_UNAVAILABLE = 2,
+    CLAIM_CHUNK_COMPLETION_ALREADY_COMPLETED = 3,
+    CLAIM_CHUNK_COMPLETION_DATABASE_ERROR = -1
+} ClaimChunkCompletionResult;
+
 CreateChunkSessionResult create_chunk_upload_session(
     const NewChunkUploadSession *session);
 
@@ -86,5 +107,14 @@ ReserveChunkPartResult reserve_chunk_upload_part(const ChunkUploadPart *part);
 
 /* 0: ready, 1: reservation no longer matches, -1: database error. */
 int mark_chunk_upload_part_ready(const ChunkUploadPart *part);
+
+/* Atomically changes a complete receiving session to completing and snapshots its parts. */
+ClaimChunkCompletionResult claim_chunk_upload_completion(
+    const char *upload_id, const char *user_name, ChunkUploadCompletion *completion);
+
+/* success != 0 marks completed; success == 0 returns the session to receiving. */
+int finish_chunk_upload_completion(const char *upload_id, const char *user_name,
+                                   int success);
+void free_chunk_upload_completion(ChunkUploadCompletion *completion);
 
 #endif

@@ -42,7 +42,7 @@ $(BIN_DIR)/share: src_cgi/share_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_
 $(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) $(FILE_REPOSITORY) common/share_id.c common/share_code.c common/share_access_service.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(CRYPTO_LIBS)
 
-$(BIN_DIR)/chunk_upload: src_cgi/chunk_upload_cgi.c $(COMMON) common/chunk_upload_repository.c common/chunk_storage.c common/upload_id.c common/upload_intake.c common/md5.c common/user_validation.c common/token_service.c | $(BIN_DIR)
+$(BIN_DIR)/chunk_upload: src_cgi/chunk_upload_cgi.c $(COMMON) common/chunk_upload_repository.c common/chunk_storage.c common/chunk_assembler.c common/upload_id.c common/upload_intake.c common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
 integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics
@@ -84,6 +84,8 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_upload_id_tests
 	$(CC) $(CFLAGS) tests/test_chunk_storage.c common/chunk_storage.c common/upload_id.c -o /tmp/ai_cloud_storage_chunk_storage_tests
 	/tmp/ai_cloud_storage_chunk_storage_tests
+	$(CC) $(CFLAGS) tests/test_chunk_assembler.c common/chunk_assembler.c common/upload_intake.c common/md5.c -o /tmp/ai_cloud_storage_chunk_assembler_tests
+	/tmp/ai_cloud_storage_chunk_assembler_tests
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) tests/test_share_code.c common/share_code.c -o /tmp/ai_cloud_storage_share_code_tests $(CRYPTO_LIBS)
 	/tmp/ai_cloud_storage_share_code_tests
 
@@ -91,4 +93,4 @@ e2e:
 	sh tests/e2e_auth.sh
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_share_code_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_share_code_tests

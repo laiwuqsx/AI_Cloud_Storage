@@ -19,6 +19,7 @@ reclaim_fixture=$(mktemp)
 chunk_fixture=$(mktemp)
 chunk_conflict_fixture=$(mktemp)
 chunk_last_fixture=$(mktemp)
+chunk_complete_fixture=$(mktemp)
 race_response_file_a=$(mktemp)
 race_response_file_b=$(mktemp)
 save_response_file_a=$(mktemp)
@@ -29,6 +30,7 @@ cancel_save_response_file=$(mktemp)
 cleanup() {
     rm -f "$upload_fixture" "$downloaded_fixture" "$race_fixture" "$reclaim_fixture" \
         "$chunk_fixture" "$chunk_conflict_fixture" "$chunk_last_fixture" \
+        "$chunk_complete_fixture" \
         "$race_response_file_a" "$race_response_file_b" \
         "$save_response_file_a" "$save_response_file_b" \
         "$cancel_response_file" "$cancel_save_response_file"
@@ -40,14 +42,17 @@ dd if=/dev/zero of="$chunk_fixture" bs=1048576 count=1 2>/dev/null
 cp "$chunk_fixture" "$chunk_conflict_fixture"
 printf 'x' | dd of="$chunk_conflict_fixture" bs=1 count=1 conv=notrunc 2>/dev/null
 printf '0123456789abcdef\n' > "$chunk_last_fixture"
+cat "$chunk_fixture" "$chunk_last_fixture" > "$chunk_complete_fixture"
 if command -v md5sum >/dev/null 2>&1; then
     chunk_md5=$(md5sum "$chunk_fixture" | awk '{print $1}')
     chunk_conflict_md5=$(md5sum "$chunk_conflict_fixture" | awk '{print $1}')
     chunk_last_md5=$(md5sum "$chunk_last_fixture" | awk '{print $1}')
+    chunk_complete_md5=$(md5sum "$chunk_complete_fixture" | awk '{print $1}')
 else
     chunk_md5=$(md5 -q "$chunk_fixture")
     chunk_conflict_md5=$(md5 -q "$chunk_conflict_fixture")
     chunk_last_md5=$(md5 -q "$chunk_last_fixture")
+    chunk_complete_md5=$(md5 -q "$chunk_complete_fixture")
 fi
 
 printf 'FastDFS upload fixture for %s\n' "$user_name" > "$upload_fixture"
@@ -177,7 +182,7 @@ esac
 
 chunk_init_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
-    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"file_name\":\"large-video.mp4\",\"md5\":\"$missing_md5\",\"total_size\":1048593,\"chunk_size\":1048576}" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"file_name\":\"large-video.mp4\",\"md5\":\"$chunk_complete_md5\",\"total_size\":1048593,\"chunk_size\":1048576}" \
     "$base_url/api/uploads/init")
 case "$chunk_init_response" in
     *'"code":0'*'"chunk_size":1048576'*'"total_chunks":2'*'"uploaded_chunks":[]'*) ;;
@@ -190,7 +195,7 @@ printf '%s\n' "$chunk_upload_id" | grep -q '^[0-9a-f]\{64\}$' || \
 chunk_session_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
     'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(user_name, CHAR(124), file_name, CHAR(124), file_md5, CHAR(124), total_size, CHAR(124), chunk_size, CHAR(124), total_chunks, CHAR(124), status, CHAR(124), expires_at > CURRENT_TIMESTAMP) FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
     sh "$chunk_upload_id")
-[ "$chunk_session_row" = "$user_name|large-video.mp4|$missing_md5|1048593|1048576|2|receiving|1" ] || \
+[ "$chunk_session_row" = "$user_name|large-video.mp4|$chunk_complete_md5|1048593|1048576|2|receiving|1" ] || \
     fail "chunk upload session database state: $chunk_session_row"
 
 initial_chunk_status_response=$(curl --silent --show-error --request GET \
@@ -304,13 +309,51 @@ docker compose -f "$compose_file" exec -T fastcgi_app \
     test -f "$chunk_stored_path" || fail "chunk file was not stored"
 docker compose -f "$compose_file" exec -T fastcgi_app \
     test -f "$chunk_last_stored_path" || fail "last chunk file was not stored"
-docker compose -f "$compose_file" exec -T fastcgi_app sh -c \
-    'rm -f "$1" "$2"; rmdir "${1%/*}"' sh \
-    "$chunk_stored_path" "$chunk_last_stored_path" || \
-    fail "chunk file cleanup"
-docker compose -f "$compose_file" exec -T mysql sh -c \
-    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage -e "DELETE FROM chunk_upload_session WHERE upload_id = '\''$1'\'';"' \
-    sh "$chunk_upload_id" || fail "chunk upload session cleanup"
+
+chunk_complete_response=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id/complete")
+case "$chunk_complete_response" in
+    *'"code":0'*'"msg":"upload complete"'*'"download_api":"/api/download"'*) ;;
+    *) fail "chunk completion response: $chunk_complete_response" ;;
+esac
+
+completed_chunk_status_response=$(curl --silent --show-error --request GET \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id")
+case "$completed_chunk_status_response" in
+    *'"code":0'*'"status":"completed"'*'"uploaded_count":2'*) ;;
+    *) fail "completed chunk status response: $completed_chunk_status_response" ;;
+esac
+
+chunk_repeat_complete_response=$(curl --silent --show-error --request POST \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id/complete")
+case "$chunk_repeat_complete_response" in
+    *'"code":0'*'"msg":"upload already completed"'*) ;;
+    *) fail "idempotent chunk completion response: $chunk_repeat_complete_response" ;;
+esac
+
+if docker compose -f "$compose_file" exec -T fastcgi_app test -e "$chunk_stored_path"; then
+    fail "completed first chunk was not cleaned"
+fi
+if docker compose -f "$compose_file" exec -T fastcgi_app test -e "$chunk_last_stored_path"; then
+    fail "completed last chunk was not cleaned"
+fi
+chunk_file_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT CONCAT(reference_count, CHAR(124), size) FROM file_info WHERE md5 = '\''$1'\'';"' \
+    sh "$chunk_complete_md5")
+[ "$chunk_file_row" = "1|1048593" ] || fail "completed chunk file row: $chunk_file_row"
+curl --silent --show-error --fail --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"user\":\"$user_name\",\"token\":\"$token\",\"md5\":\"$chunk_complete_md5\"}" \
+    "$base_url/api/download" --output "$downloaded_fixture" || \
+    fail "completed chunk download failed"
+cmp -s "$chunk_complete_fixture" "$downloaded_fixture" || \
+    fail "completed chunk download differs from source bytes"
 
 upload_response=$(curl --silent --show-error --request POST \
     --header "X-Upload-User: $user_name" \

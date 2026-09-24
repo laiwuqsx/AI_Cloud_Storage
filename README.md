@@ -36,7 +36,7 @@ FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upl
 
 `POST /api/upload` 已接入受限的单文件 `multipart/form-data` 流式解析：请求头 `X-Upload-User`、`X-Upload-Token`、`X-Upload-MD5`、`X-Upload-Size` 分别携带用户、Token、客户端 MD5 和文件字节数，文件 part 必须使用字段名 `file`。接口先验证 Redis Token，再将文件内容交给安全接收层，随后执行 FastDFS 上传和首次入库事务；本地临时文件在成功和失败路径都会清理。Nginx 对该路由关闭请求体缓存，当前限制为 12 MiB，应用文件限制为 10 MiB。
 
-分片上传使用 `POST /api/uploads/init` 创建 24 小时有效的会话，再以 `PUT /api/uploads/{upload_id}/chunks/{index}` 上传原始分片字节。每个请求按会话所有者、索引范围、精确分片大小和 `X-Chunk-MD5` 校验；分片先流式写入随机临时文件，再以原子硬链接安装到独立 Docker 数据卷。MySQL 的 `chunk_upload_part` 用 `staging -> ready` 记录落盘状态：相同索引和内容重复上传会幂等成功，不同内容占用同一索引会返回冲突。已有数据库需依次执行 `sql/migrations/005_chunk_upload_session.sql` 和 `sql/migrations/006_chunk_upload_part.sql`。当前尚未提供 complete 合并接口，因此还不能把分片提交为最终 FastDFS 文件。
+分片上传使用 `POST /api/uploads/init` 创建 24 小时有效的会话，再以 `PUT /api/uploads/{upload_id}/chunks/{index}` 上传原始分片字节。每个请求按会话所有者、索引范围、精确分片大小和 `X-Chunk-MD5` 校验；分片先流式写入随机临时文件，再以原子硬链接安装到独立 Docker 数据卷。MySQL 的 `chunk_upload_part` 用 `staging -> ready` 记录落盘状态：相同索引和内容重复上传会幂等成功，不同内容占用同一索引会返回冲突。全部分片就绪后，`POST /api/uploads/{upload_id}/complete` 会原子认领会话、按序流式合并、重新校验整文件大小和 MD5，并复用普通首次上传的 FastDFS 与数据库事务/失败补偿流程；只有最终文件提交成功后才删除本地分片。已有数据库需依次执行 `sql/migrations/005_chunk_upload_session.sql` 和 `sql/migrations/006_chunk_upload_part.sql`。
 
 ```sh
 curl -X POST http://localhost:8080/api/upload \
@@ -83,6 +83,7 @@ make test
 - POST /api/uploads/init：创建 24 小时有效的分片上传会话。JSON 包含 `user`、`token`、`file_name`、`md5`、`total_size` 和 `chunk_size`；成功返回随机 `upload_id`、总分片数和当前已上传分片。
 - PUT /api/uploads/{upload_id}/chunks/{index}：以原始二进制请求体上传一个分片，请求头携带 `X-Upload-User`、`X-Upload-Token` 和 `X-Chunk-MD5`；相同内容重试幂等成功，相同索引改传不同内容会被拒绝。
 - GET /api/uploads/{upload_id}：通过 `X-Upload-User` 和 `X-Upload-Token` 查询自己的上传会话，返回会话状态、分片计划、剩余有效期以及按序排列的 `uploaded_chunks`，供客户端断点续传。
+- POST /api/uploads/{upload_id}/complete：鉴权后原子认领全部已就绪分片，流式合并并校验整文件 MD5，再提交到 FastDFS 和文件元数据事务；成功后会话变为 `completed` 并清理本地分片，重复完成请求幂等成功。
 - POST /api/download：携带 user、Token 和 md5，校验当前用户所有权后下载文件。
 - POST /api/md5：安全上传预检。`code=1` 表示当前用户未拥有，必须普通上传并由服务端验证内容；全局文件存在与否返回相同结果。`code=3` 表示请求错误；`code=4` 表示 Token 无效；`code=5` 表示用户已经拥有；`code=6` 表示数据库故障。
 - POST /api/dealfile?cmd=del：携带 user、Token、md5，事务删除当前用户关系；最后一个引用会同时删除 `file_info` 并持久化异步物理清理任务。

@@ -1,6 +1,7 @@
 #include "chunk_upload_repository.h"
 
 #include <mysql/mysql.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "runtime_config.h"
@@ -472,4 +473,251 @@ done:
     if (statement) mysql_stmt_close(statement);
     if (connection) mysql_close(connection);
     return result;
+}
+
+static int bind_identity(MYSQL_STMT *statement, const char *upload_id,
+                         const char *user_name, MYSQL_BIND bind[2],
+                         unsigned long lengths[2])
+{
+    memset(bind, 0, sizeof(MYSQL_BIND) * 2);
+    lengths[0] = (unsigned long)strlen(upload_id);
+    lengths[1] = (unsigned long)strlen(user_name);
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = (void *)upload_id;
+    bind[0].length = &lengths[0];
+    bind[1].buffer_type = MYSQL_TYPE_STRING;
+    bind[1].buffer = (void *)user_name;
+    bind[1].length = &lengths[1];
+    return mysql_stmt_bind_param(statement, bind);
+}
+
+static int set_completion_status(MYSQL *connection, const char *upload_id,
+                                 const char *user_name, const char *target)
+{
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND bind[2];
+    unsigned long lengths[2];
+    const char *complete_sql =
+        "UPDATE chunk_upload_session SET status = 'completed' "
+        "WHERE upload_id = ? AND user_name = ? AND status = 'completing'";
+    const char *release_sql =
+        "UPDATE chunk_upload_session SET status = 'receiving' "
+        "WHERE upload_id = ? AND user_name = ? AND status = 'completing' "
+        "AND expires_at > CURRENT_TIMESTAMP";
+    const char *sql = strcmp(target, "completed") == 0 ? complete_sql : release_sql;
+    int result = -1;
+
+    statement = mysql_stmt_init(connection);
+    if (!statement || mysql_stmt_prepare(statement, sql, (unsigned long)strlen(sql)) != 0 ||
+        bind_identity(statement, upload_id, user_name, bind, lengths) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    result = mysql_stmt_affected_rows(statement) == 1 ? 0 : 1;
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    return result;
+}
+
+static ClaimChunkCompletionResult classify_unclaimed_session(
+    MYSQL *connection, const char *upload_id, const char *user_name)
+{
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND param[2], output[2];
+    unsigned long lengths[2];
+    char status[16] = {0};
+    unsigned long status_length = 0;
+    unsigned int complete = 0;
+    int fetch_result;
+    const char *sql =
+        "SELECT status, ((SELECT COUNT(*) FROM chunk_upload_part p "
+        "WHERE p.upload_id = s.upload_id AND p.status = 'ready') = s.total_chunks "
+        "AND (SELECT COALESCE(SUM(size), 0) FROM chunk_upload_part p "
+        "WHERE p.upload_id = s.upload_id AND p.status = 'ready') = s.total_size) "
+        "FROM chunk_upload_session s WHERE upload_id = ? AND user_name = ? "
+        "AND expires_at > CURRENT_TIMESTAMP";
+    ClaimChunkCompletionResult result = CLAIM_CHUNK_COMPLETION_DATABASE_ERROR;
+
+    statement = mysql_stmt_init(connection);
+    if (!statement || mysql_stmt_prepare(statement, sql, (unsigned long)strlen(sql)) != 0 ||
+        bind_identity(statement, upload_id, user_name, param, lengths) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    memset(output, 0, sizeof(output));
+    output[0].buffer_type = MYSQL_TYPE_STRING;
+    output[0].buffer = status;
+    output[0].buffer_length = sizeof(status) - 1;
+    output[0].length = &status_length;
+    output[1].buffer_type = MYSQL_TYPE_LONG;
+    output[1].buffer = &complete;
+    output[1].is_unsigned = 1;
+    if (mysql_stmt_bind_result(statement, output) != 0 ||
+        mysql_stmt_store_result(statement) != 0) goto done;
+    fetch_result = mysql_stmt_fetch(statement);
+    if (fetch_result == MYSQL_NO_DATA) {
+        result = CLAIM_CHUNK_COMPLETION_UNAVAILABLE;
+    } else if (fetch_result == 0 && status_length < sizeof(status)) {
+        status[status_length] = '\0';
+        if (strcmp(status, "completed") == 0) {
+            result = CLAIM_CHUNK_COMPLETION_ALREADY_COMPLETED;
+        } else {
+            result = strcmp(status, "receiving") == 0 && !complete
+                ? CLAIM_CHUNK_COMPLETION_INCOMPLETE
+                : CLAIM_CHUNK_COMPLETION_UNAVAILABLE;
+        }
+    }
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    return result;
+}
+
+ClaimChunkCompletionResult claim_chunk_upload_completion(
+    const char *upload_id, const char *user_name, ChunkUploadCompletion *completion)
+{
+    MYSQL *connection = NULL;
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND param[2], output[4];
+    unsigned long lengths[2];
+    unsigned long file_name_length = 0;
+    unsigned long md5_length = 0;
+    unsigned long path_length = 0;
+    my_ulonglong total_size = 0;
+    my_ulonglong part_size = 0;
+    unsigned int total_chunks = 0;
+    unsigned int chunk_index = 0;
+    char part_path[CHUNK_STORED_PATH_CAPACITY];
+    size_t count = 0;
+    int fetch_result;
+    const char *claim_sql =
+        "UPDATE chunk_upload_session s SET status = 'completing' "
+        "WHERE upload_id = ? AND user_name = ? AND status = 'receiving' "
+        "AND expires_at > CURRENT_TIMESTAMP "
+        "AND (SELECT COUNT(*) FROM chunk_upload_part p WHERE p.upload_id = s.upload_id "
+        "AND p.status = 'ready') = s.total_chunks "
+        "AND (SELECT COALESCE(SUM(size), 0) FROM chunk_upload_part p "
+        "WHERE p.upload_id = s.upload_id AND p.status = 'ready') = s.total_size";
+    const char *session_sql =
+        "SELECT file_name, file_md5, total_size, total_chunks "
+        "FROM chunk_upload_session WHERE upload_id = ? AND user_name = ? "
+        "AND status = 'completing'";
+    const char *parts_sql =
+        "SELECT chunk_index, size, stored_path FROM chunk_upload_part "
+        "WHERE upload_id = ? AND status = 'ready' ORDER BY chunk_index";
+    ClaimChunkCompletionResult result = CLAIM_CHUNK_COMPLETION_DATABASE_ERROR;
+
+    if (!upload_id || !user_name || !completion) return result;
+    memset(completion, 0, sizeof(*completion));
+    connection = connect_database();
+    if (!connection) goto done;
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, claim_sql, (unsigned long)strlen(claim_sql)) != 0 ||
+        bind_identity(statement, upload_id, user_name, param, lengths) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    if (mysql_stmt_affected_rows(statement) != 1) {
+        mysql_stmt_close(statement);
+        statement = NULL;
+        result = classify_unclaimed_session(connection, upload_id, user_name);
+        goto done;
+    }
+
+    mysql_stmt_close(statement);
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, session_sql, (unsigned long)strlen(session_sql)) != 0 ||
+        bind_identity(statement, upload_id, user_name, param, lengths) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto release;
+    memset(output, 0, sizeof(output));
+    output[0].buffer_type = MYSQL_TYPE_STRING;
+    output[0].buffer = completion->file_name;
+    output[0].buffer_length = sizeof(completion->file_name) - 1;
+    output[0].length = &file_name_length;
+    output[1].buffer_type = MYSQL_TYPE_STRING;
+    output[1].buffer = completion->file_md5;
+    output[1].buffer_length = sizeof(completion->file_md5) - 1;
+    output[1].length = &md5_length;
+    output[2].buffer_type = MYSQL_TYPE_LONGLONG;
+    output[2].buffer = &total_size;
+    output[2].is_unsigned = 1;
+    output[3].buffer_type = MYSQL_TYPE_LONG;
+    output[3].buffer = &total_chunks;
+    output[3].is_unsigned = 1;
+    if (mysql_stmt_bind_result(statement, output) != 0 ||
+        mysql_stmt_store_result(statement) != 0 || mysql_stmt_fetch(statement) != 0 ||
+        file_name_length >= sizeof(completion->file_name) ||
+        md5_length >= sizeof(completion->file_md5) || total_chunks == 0 ||
+        total_chunks > CHUNK_UPLOAD_MAX_PARTS) goto release;
+    completion->file_name[file_name_length] = '\0';
+    completion->file_md5[md5_length] = '\0';
+    completion->total_size = (uint64_t)total_size;
+    completion->total_chunks = total_chunks;
+    completion->parts = calloc(total_chunks, sizeof(*completion->parts));
+    if (!completion->parts) goto release;
+
+    mysql_stmt_close(statement);
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, parts_sql, (unsigned long)strlen(parts_sql)) != 0)
+        goto release;
+    memset(param, 0, sizeof(param));
+    lengths[0] = (unsigned long)strlen(upload_id);
+    param[0].buffer_type = MYSQL_TYPE_STRING;
+    param[0].buffer = (void *)upload_id;
+    param[0].length = &lengths[0];
+    if (mysql_stmt_bind_param(statement, param) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto release;
+    memset(output, 0, sizeof(output));
+    output[0].buffer_type = MYSQL_TYPE_LONG;
+    output[0].buffer = &chunk_index;
+    output[0].is_unsigned = 1;
+    output[1].buffer_type = MYSQL_TYPE_LONGLONG;
+    output[1].buffer = &part_size;
+    output[1].is_unsigned = 1;
+    output[2].buffer_type = MYSQL_TYPE_STRING;
+    output[2].buffer = part_path;
+    output[2].buffer_length = CHUNK_STORED_PATH_CAPACITY - 1;
+    output[2].length = &path_length;
+    if (mysql_stmt_bind_result(statement, output) != 0 ||
+        mysql_stmt_store_result(statement) != 0) goto release;
+    while ((fetch_result = mysql_stmt_fetch(statement)) == 0) {
+        if (count >= total_chunks || chunk_index != count) goto release;
+        if (path_length >= CHUNK_STORED_PATH_CAPACITY) goto release;
+        part_path[path_length] = '\0';
+        memcpy(completion->parts[count].stored_path, part_path, path_length + 1);
+        completion->parts[count].size = (uint64_t)part_size;
+        ++count;
+    }
+    if (fetch_result != MYSQL_NO_DATA || count != total_chunks) goto release;
+    result = CLAIM_CHUNK_COMPLETION_OK;
+    goto done;
+
+release:
+    set_completion_status(connection, upload_id, user_name, "receiving");
+    free_chunk_upload_completion(completion);
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    if (connection) mysql_close(connection);
+    return result;
+}
+
+int finish_chunk_upload_completion(const char *upload_id, const char *user_name,
+                                   int success)
+{
+    MYSQL *connection;
+    int result;
+
+    if (!upload_id || !user_name) return -1;
+    connection = connect_database();
+    if (!connection) return -1;
+    result = set_completion_status(connection, upload_id, user_name,
+                                   success ? "completed" : "receiving");
+    mysql_close(connection);
+    return result;
+}
+
+void free_chunk_upload_completion(ChunkUploadCompletion *completion)
+{
+    if (!completion) return;
+    free(completion->parts);
+    memset(completion, 0, sizeof(*completion));
 }
