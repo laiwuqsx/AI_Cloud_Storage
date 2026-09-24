@@ -11,7 +11,7 @@ OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
 CRYPTO_CFLAGS := $(if $(OPENSSL_PREFIX),-I$(OPENSSL_PREFIX)/include)
 CRYPTO_LIBS := $(if $(OPENSSL_PREFIX),-L$(OPENSSL_PREFIX)/lib) -lcrypto
 
-.PHONY: all integration-tools test e2e clean
+.PHONY: all integration-tools test test-client e2e clean
 
 all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile $(BIN_DIR)/logout $(BIN_DIR)/upload $(BIN_DIR)/share $(BIN_DIR)/download $(BIN_DIR)/chunk_upload
 
@@ -91,6 +91,9 @@ test: tests/test_json_util.c common/json_util.c
 
 e2e:
 	sh tests/e2e_auth.sh
+
+test-client:
+	node --test client/upload_client.test.mjs
 
 clean:
 	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_share_code_tests
