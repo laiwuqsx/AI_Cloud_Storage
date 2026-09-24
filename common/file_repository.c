@@ -6,7 +6,38 @@
 #include <string.h>
 
 #include "cleanup_repository.h"
+#include "outbox_repository.h"
 #include "runtime_config.h"
+
+#define AI_EMBEDDING_VERSION 1U
+
+static int enqueue_file_added_events(MYSQL *connection, const char *user,
+                                     const char *md5,
+                                     unsigned long long user_file_id)
+{
+    AiIndexEvent content = {
+        AI_INDEX_EVENT_FILE_CONTENT_READY, md5, NULL, 0, AI_EMBEDDING_VERSION
+    };
+    AiIndexEvent added = {
+        AI_INDEX_EVENT_USER_FILE_ADDED, md5, user, user_file_id,
+        AI_EMBEDDING_VERSION
+    };
+
+    return enqueue_ai_index_event_in_transaction(connection, &content) == 0 &&
+           enqueue_ai_index_event_in_transaction(connection, &added) == 0 ? 0 : -1;
+}
+
+static int enqueue_file_removed_event(MYSQL *connection, const char *user,
+                                      const char *md5,
+                                      unsigned long long user_file_id)
+{
+    AiIndexEvent removed = {
+        AI_INDEX_EVENT_USER_FILE_REMOVED, md5, user, user_file_id,
+        AI_EMBEDDING_VERSION
+    };
+
+    return enqueue_ai_index_event_in_transaction(connection, &removed);
+}
 
 int list_user_files(const char *user, UserFile *files, size_t capacity, size_t *count)
 {
@@ -124,6 +155,7 @@ RecordNewFileResult record_new_file_upload(const NewFileRecord *record)
     unsigned long md5_length, storage_key_length, url_length, type_length;
     unsigned long user_length, file_name_length;
     my_ulonglong file_size;
+    my_ulonglong user_file_id = 0;
     const char *file_sql =
         "INSERT INTO file_info "
         "(md5, storage_key, url, size, type, reference_count) VALUES (?, ?, ?, ?, ?, 1)";
@@ -184,6 +216,10 @@ RecordNewFileResult record_new_file_upload(const NewFileRecord *record)
     if (mysql_stmt_bind_param(user_file_stmt, user_file_bind) != 0 ||
         mysql_stmt_execute(user_file_stmt) != 0 ||
         mysql_stmt_affected_rows(user_file_stmt) != 1) goto rollback;
+    user_file_id = mysql_insert_id(conn);
+    if (user_file_id == 0 ||
+        enqueue_file_added_events(conn, record->user_name, record->md5,
+                                  (unsigned long long)user_file_id) != 0) goto rollback;
 
     if (mysql_commit(conn) != 0) {
         result = RECORD_NEW_FILE_COMMIT_UNKNOWN;
@@ -294,6 +330,7 @@ ClaimFileResult claim_existing_file_with_location(const char *user, const char *
     MYSQL_BIND check_bind[1], location_bind[2], insert_bind[3], increment_bind[1];
     unsigned long md5_length, user_length, name_length, location_lengths[2];
     char storage_key[257], url[513];
+    my_ulonglong user_file_id = 0;
     const char *check_sql =
         "SELECT storage_key, url FROM file_info WHERE md5 = ? FOR UPDATE";
     const char *insert_sql =
@@ -365,6 +402,10 @@ ClaimFileResult claim_existing_file_with_location(const char *user, const char *
         if (mysql_stmt_errno(insert_stmt) == 1062) result = CLAIM_FILE_ALREADY_OWNED;
         goto rollback;
     }
+    user_file_id = mysql_insert_id(conn);
+    if (user_file_id == 0 ||
+        enqueue_file_added_events(conn, user, md5,
+                                  (unsigned long long)user_file_id) != 0) goto rollback;
 
     increment_stmt = mysql_stmt_init(conn);
     if (!increment_stmt ||
@@ -403,13 +444,14 @@ int remove_user_file(const char *user, const char *md5)
     MYSQL_STMT *delete_stmt = NULL;
     MYSQL_STMT *decrement_stmt = NULL;
     MYSQL_STMT *delete_file_stmt = NULL;
-    MYSQL_BIND select_param[2], select_result[2];
+    MYSQL_BIND select_param[2], select_result[3];
     MYSQL_BIND unshare_bind[2], delete_bind[2], decrement_bind[1], delete_file_bind[2];
     unsigned long user_length, md5_length, storage_key_length;
     char storage_key[257];
+    my_ulonglong user_file_id = 0;
     unsigned int reference_count = 0;
     const char *select_sql =
-        "SELECT f.storage_key, f.reference_count "
+        "SELECT u.id, f.storage_key, f.reference_count "
         "FROM user_file_list u JOIN file_info f ON f.md5 = u.md5 "
         "WHERE u.user_name = ? AND u.md5 = ? FOR UPDATE";
     const char *delete_sql = "DELETE FROM user_file_list WHERE user_name = ? AND md5 = ?";
@@ -448,13 +490,16 @@ int remove_user_file(const char *user, const char *md5)
     select_param[1].length = &md5_length;
     memset(storage_key, 0, sizeof(storage_key));
     memset(select_result, 0, sizeof(select_result));
-    select_result[0].buffer_type = MYSQL_TYPE_STRING;
-    select_result[0].buffer = storage_key;
-    select_result[0].buffer_length = sizeof(storage_key) - 1;
-    select_result[0].length = &storage_key_length;
-    select_result[1].buffer_type = MYSQL_TYPE_LONG;
-    select_result[1].buffer = &reference_count;
-    select_result[1].is_unsigned = 1;
+    select_result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    select_result[0].buffer = &user_file_id;
+    select_result[0].is_unsigned = 1;
+    select_result[1].buffer_type = MYSQL_TYPE_STRING;
+    select_result[1].buffer = storage_key;
+    select_result[1].buffer_length = sizeof(storage_key) - 1;
+    select_result[1].length = &storage_key_length;
+    select_result[2].buffer_type = MYSQL_TYPE_LONG;
+    select_result[2].buffer = &reference_count;
+    select_result[2].is_unsigned = 1;
     if (mysql_stmt_bind_param(select_stmt, select_param) != 0 ||
         mysql_stmt_execute(select_stmt) != 0 ||
         mysql_stmt_bind_result(select_stmt, select_result) != 0 ||
@@ -464,7 +509,8 @@ int remove_user_file(const char *user, const char *md5)
         goto rollback;
     }
     if (mysql_stmt_fetch(select_stmt) != 0 ||
-        storage_key_length >= sizeof(storage_key) || reference_count == 0) goto rollback;
+        storage_key_length >= sizeof(storage_key) || reference_count == 0 ||
+        user_file_id == 0) goto rollback;
     storage_key[storage_key_length] = '\0';
 
     unshare_stmt = mysql_stmt_init(conn);
@@ -492,6 +538,8 @@ int remove_user_file(const char *user, const char *md5)
         result = 1;
         goto rollback;
     }
+    if (enqueue_file_removed_event(conn, user, md5,
+                                   (unsigned long long)user_file_id) != 0) goto rollback;
 
     if (reference_count > 1) {
         decrement_stmt = mysql_stmt_init(conn);
@@ -883,6 +931,7 @@ static SaveSharedFileResult save_shared_file_once(const char *user,
     unsigned long owner_lengths[2];
     my_ulonglong owner_file_id = 0;
     unsigned int file_marker = 0;
+    my_ulonglong saved_file_id = 0;
     char md5[33], file_name[129];
     const char *share_sql =
         "SELECT user_file_id FROM share_file_list "
@@ -1025,6 +1074,13 @@ static SaveSharedFileResult save_shared_file_once(const char *user,
         } else {
             mark_retryable_transaction_error(conn, insert_stmt, retryable);
         }
+        goto rollback;
+    }
+    saved_file_id = mysql_insert_id(conn);
+    if (saved_file_id == 0 ||
+        enqueue_file_added_events(conn, user, md5,
+                                  (unsigned long long)saved_file_id) != 0) {
+        mark_retryable_transaction_error(conn, insert_stmt, retryable);
         goto rollback;
     }
 

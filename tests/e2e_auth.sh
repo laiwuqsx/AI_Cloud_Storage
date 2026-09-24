@@ -39,6 +39,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 dd if=/dev/zero of="$chunk_fixture" bs=1048576 count=1 2>/dev/null
+printf '%s' "$user_name" | dd of="$chunk_fixture" bs=1 conv=notrunc 2>/dev/null
 cp "$chunk_fixture" "$chunk_conflict_fixture"
 printf 'x' | dd of="$chunk_conflict_fixture" bs=1 count=1 conv=notrunc 2>/dev/null
 printf '0123456789abcdef\n' > "$chunk_last_fixture"
@@ -152,6 +153,14 @@ if [ "$ai_state_table_count" != "2" ]; then
     docker compose -f "$compose_file" exec -T mysql sh -c \
         'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
         < sql/migrations/007_ai_index_state.sql || fail "AI index state migration"
+fi
+
+outbox_schema_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '\''outbox_event'\'') + (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''user_ai_index_entry'\'' AND column_name = '\''user_file_id'\'');"')
+if [ "$outbox_schema_count" != "2" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/008_ai_outbox.sql || fail "AI outbox migration"
 fi
 
 register_response=$(curl --silent --show-error --request POST \

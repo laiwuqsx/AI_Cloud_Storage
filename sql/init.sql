@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS file_ai_metadata (
 CREATE TABLE IF NOT EXISTS user_ai_index_entry (
   user_name VARCHAR(32) NOT NULL,
   md5 CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_file_id BIGINT UNSIGNED NOT NULL,
   status ENUM('pending', 'waiting_content', 'indexing', 'indexed', 'removing', 'failed')
     NOT NULL DEFAULT 'pending',
   vector_id BIGINT UNSIGNED NULL,
@@ -145,8 +146,28 @@ CREATE TABLE IF NOT EXISTS user_ai_index_entry (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (user_name, md5),
+  UNIQUE KEY uq_user_ai_relation (user_file_id),
   UNIQUE KEY uq_user_ai_vector (user_name, vector_id),
   KEY idx_user_ai_work (status, next_attempt_at, updated_at),
   CONSTRAINT fk_user_ai_entry_user FOREIGN KEY (user_name)
     REFERENCES user_info(user_name) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS outbox_event (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  event_type VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  aggregate_key VARCHAR(160) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_key VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  payload JSON NOT NULL,
+  status ENUM('pending', 'publishing', 'published', 'failed')
+    NOT NULL DEFAULT 'pending',
+  retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+  last_error VARCHAR(512) NOT NULL DEFAULT '',
+  next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  published_at TIMESTAMP NULL DEFAULT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_outbox_idempotency (idempotency_key),
+  KEY idx_outbox_publish (status, next_attempt_at, id),
+  KEY idx_outbox_aggregate (aggregate_key, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

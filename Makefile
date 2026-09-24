@@ -4,7 +4,7 @@ FCGI_LIBS := -lfcgi
 BIN_DIR := bin_cgi
 
 COMMON := common/json_util.c common/http_response.c common/runtime_config.c
-FILE_REPOSITORY := common/file_repository.c common/cleanup_repository.c
+FILE_REPOSITORY := common/file_repository.c common/cleanup_repository.c common/outbox_repository.c common/ai_index_event.c
 MYSQL_LIBS := -lmysqlclient
 REDIS_LIBS := -lhiredis
 OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
@@ -86,7 +86,7 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_chunk_storage_tests
 	$(CC) $(CFLAGS) tests/test_chunk_assembler.c common/chunk_assembler.c common/upload_intake.c common/md5.c -o /tmp/ai_cloud_storage_chunk_assembler_tests
 	/tmp/ai_cloud_storage_chunk_assembler_tests
-	$(CC) $(CFLAGS) tests/test_ai_index_event.c common/ai_index_event.c common/user_validation.c common/md5.c -o /tmp/ai_cloud_storage_ai_index_event_tests
+	$(CC) $(CFLAGS) tests/test_ai_index_event.c common/ai_index_event.c -o /tmp/ai_cloud_storage_ai_index_event_tests
 	/tmp/ai_cloud_storage_ai_index_event_tests
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) tests/test_share_code.c common/share_code.c -o /tmp/ai_cloud_storage_share_code_tests $(CRYPTO_LIBS)
 	/tmp/ai_cloud_storage_share_code_tests

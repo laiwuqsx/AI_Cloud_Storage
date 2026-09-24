@@ -4,8 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "user_validation.h"
-
 static int valid_md5(const char *value)
 {
     size_t index;
@@ -14,6 +12,19 @@ static int valid_md5(const char *value)
     for (index = 0; index < 32; ++index) {
         if (!((value[index] >= '0' && value[index] <= '9') ||
               (value[index] >= 'a' && value[index] <= 'f'))) return 0;
+    }
+    return 1;
+}
+
+static int valid_user_name(const char *value)
+{
+    size_t index, length;
+
+    if (!value) return 0;
+    length = strlen(value);
+    if (length < 3 || length > 32) return 0;
+    for (index = 0; index < length; ++index) {
+        if (!isalnum((unsigned char)value[index]) && value[index] != '_') return 0;
     }
     return 1;
 }
@@ -55,7 +66,7 @@ int validate_ai_index_event(const AiIndexEvent *event)
         return (!event->user_name || event->user_name[0] == '\0') &&
                event->user_file_id == 0;
     }
-    return validate_username(event->user_name) && event->user_file_id > 0;
+    return valid_user_name(event->user_name) && event->user_file_id > 0;
 }
 
 int ai_index_event_idempotency_key(const AiIndexEvent *event,

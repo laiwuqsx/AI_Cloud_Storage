@@ -28,6 +28,7 @@ static int verify_and_cleanup(const char *user, const char *md5, const char *sto
     MYSQL_ROW row;
     char sql[1024];
     int verified = 0;
+    int events_verified = 0;
 
     conn = connect_database();
     if (!conn) return 0;
@@ -45,12 +46,41 @@ static int verify_and_cleanup(const char *user, const char *md5, const char *sto
     if (result_set) mysql_free_result(result_set);
 
     snprintf(sql, sizeof(sql),
+             "SELECT "
+             "(SELECT COUNT(*) FROM outbox_event WHERE event_type = 'FILE_CONTENT_READY' "
+             "AND aggregate_key = 'content:%s'), "
+             "(SELECT COUNT(*) FROM outbox_event WHERE event_type = 'USER_FILE_ADDED' "
+             "AND aggregate_key = 'user:%s:%s'), "
+             "(SELECT COUNT(*) FROM file_ai_metadata WHERE md5 = '%s' "
+             "AND status = 'pending'), "
+             "(SELECT COUNT(*) FROM user_ai_index_entry a JOIN user_file_list u "
+             "ON u.id = a.user_file_id WHERE a.user_name = '%s' AND a.md5 = '%s' "
+             "AND a.status = 'pending')",
+             md5, user, md5, md5, user, md5);
+    if (mysql_query(conn, sql) == 0 && (result_set = mysql_store_result(conn)) != NULL &&
+        (row = mysql_fetch_row(result_set)) != NULL &&
+        row[0] && strcmp(row[0], "1") == 0 &&
+        row[1] && strcmp(row[1], "1") == 0 &&
+        row[2] && strcmp(row[2], "1") == 0 &&
+        row[3] && strcmp(row[3], "1") == 0) events_verified = 1;
+    if (result_set) mysql_free_result(result_set);
+
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM outbox_event WHERE aggregate_key IN "
+             "('content:%s', 'user:%s:%s')", md5, user, md5);
+    if (mysql_query(conn, sql) != 0) verified = 0;
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM user_ai_index_entry WHERE user_name = '%s' AND md5 = '%s'",
+             user, md5);
+    if (mysql_query(conn, sql) != 0) verified = 0;
+
+    snprintf(sql, sizeof(sql),
              "DELETE FROM user_file_list WHERE user_name = '%s' AND md5 = '%s'", user, md5);
     if (mysql_query(conn, sql) != 0) verified = 0;
     snprintf(sql, sizeof(sql), "DELETE FROM file_info WHERE md5 = '%s'", md5);
     if (mysql_query(conn, sql) != 0) verified = 0;
     mysql_close(conn);
-    return verified;
+    return verified && events_verified;
 }
 
 int main(int argc, char **argv)
