@@ -1,9 +1,14 @@
 #ifndef AI_CLOUD_CHUNK_UPLOAD_REPOSITORY_H
 #define AI_CLOUD_CHUNK_UPLOAD_REPOSITORY_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define CHUNK_STORED_PATH_CAPACITY 512
+#define CHUNK_UPLOAD_MAX_PARTS 10000U
+#define CHUNK_UPLOAD_FILE_NAME_CAPACITY 129
+#define CHUNK_UPLOAD_MD5_CAPACITY 33
+#define CHUNK_UPLOAD_STATUS_CAPACITY 16
 
 typedef enum {
     CREATE_CHUNK_SESSION_OK = 0,
@@ -35,6 +40,24 @@ typedef enum {
 } FindChunkSessionResult;
 
 typedef enum {
+    GET_CHUNK_STATUS_OK = 0,
+    GET_CHUNK_STATUS_UNAVAILABLE = 1,
+    GET_CHUNK_STATUS_DATABASE_ERROR = -1
+} GetChunkStatusResult;
+
+typedef struct {
+    char file_name[CHUNK_UPLOAD_FILE_NAME_CAPACITY];
+    char file_md5[CHUNK_UPLOAD_MD5_CAPACITY];
+    char status[CHUNK_UPLOAD_STATUS_CAPACITY];
+    uint64_t total_size;
+    uint64_t expires_in_seconds;
+    unsigned int chunk_size;
+    unsigned int total_chunks;
+    unsigned int ready_chunks[CHUNK_UPLOAD_MAX_PARTS];
+    size_t ready_count;
+} ChunkUploadStatus;
+
+typedef enum {
     RESERVE_CHUNK_PART_NEW = 0,
     RESERVE_CHUNK_PART_STAGING = 1,
     RESERVE_CHUNK_PART_READY = 2,
@@ -55,6 +78,9 @@ CreateChunkSessionResult create_chunk_upload_session(
 
 FindChunkSessionResult find_receiving_chunk_session(
     const char *upload_id, const char *user_name, ChunkUploadSessionPlan *plan);
+
+GetChunkStatusResult get_chunk_upload_status(
+    const char *upload_id, const char *user_name, ChunkUploadStatus *status);
 
 ReserveChunkPartResult reserve_chunk_upload_part(const ChunkUploadPart *part);
 

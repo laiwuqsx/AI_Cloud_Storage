@@ -172,6 +172,97 @@ static int parse_chunk_path(const char *path,
     return 0;
 }
 
+static int parse_status_path(const char *path,
+                             char upload_id[UPLOAD_ID_HEX_LENGTH + 1])
+{
+    static const char prefix[] = "/api/uploads/";
+    const char *value;
+
+    if (!path || strncmp(path, prefix, sizeof(prefix) - 1) != 0) return -1;
+    value = path + sizeof(prefix) - 1;
+    if (!validate_upload_id(value)) return -1;
+    memcpy(upload_id, value, UPLOAD_ID_HEX_LENGTH + 1);
+    return 0;
+}
+
+static void write_json_string(const char *value)
+{
+    const unsigned char *cursor = (const unsigned char *)(value ? value : "");
+
+    putchar('"');
+    while (*cursor) {
+        if (*cursor == '"' || *cursor == '\\') putchar('\\');
+        if (*cursor == '\n') fputs("\\n", stdout);
+        else if (*cursor == '\r') fputs("\\r", stdout);
+        else if (*cursor == '\t') fputs("\\t", stdout);
+        else if (*cursor >= 0x20) putchar(*cursor);
+        ++cursor;
+    }
+    putchar('"');
+}
+
+static void write_status_success(const char *upload_id,
+                                 const ChunkUploadStatus *status)
+{
+    size_t index;
+
+    write_json_header();
+    fputs("{\"code\":0,\"msg\":\"chunk upload status\",\"upload_id\":", stdout);
+    write_json_string(upload_id);
+    fputs(",\"file_name\":", stdout);
+    write_json_string(status->file_name);
+    fputs(",\"md5\":", stdout);
+    write_json_string(status->file_md5);
+    printf(",\"total_size\":%llu,\"chunk_size\":%u,\"total_chunks\":%u,",
+           (unsigned long long)status->total_size,
+           status->chunk_size, status->total_chunks);
+    fputs("\"status\":", stdout);
+    write_json_string(status->status);
+    printf(",\"expires_in\":%llu,\"uploaded_count\":%llu,"
+           "\"all_chunks_uploaded\":%s,"
+           "\"uploaded_chunks\":[",
+           (unsigned long long)status->expires_in_seconds,
+           (unsigned long long)status->ready_count,
+           status->ready_count == status->total_chunks ? "true" : "false");
+    for (index = 0; index < status->ready_count; ++index) {
+        if (index > 0) putchar(',');
+        printf("%u", status->ready_chunks[index]);
+    }
+    fputs("]}\n", stdout);
+}
+
+static void handle_status_request(const char *path)
+{
+    const char *method = getenv("REQUEST_METHOD");
+    const char *user = getenv("HTTP_X_UPLOAD_USER");
+    const char *token = getenv("HTTP_X_UPLOAD_TOKEN");
+    char upload_id[UPLOAD_ID_HEX_LENGTH + 1];
+    ChunkUploadStatus status;
+    GetChunkStatusResult result;
+
+    if (!method || strcmp(method, "GET") != 0 ||
+        parse_status_path(path, upload_id) != 0 || !validate_username(user)) {
+        write_json_response(CHUNK_UPLOAD_INVALID_REQUEST,
+                            "invalid chunk status request", NULL);
+        return;
+    }
+    if (verify_session_token(user, token) != 0) {
+        write_json_response(CHUNK_UPLOAD_TOKEN_ERROR, "token error", NULL);
+        return;
+    }
+    result = get_chunk_upload_status(upload_id, user, &status);
+    if (result == GET_CHUNK_STATUS_UNAVAILABLE) {
+        write_json_response(CHUNK_UPLOAD_SESSION_UNAVAILABLE,
+                            "chunk upload session unavailable", NULL);
+        return;
+    }
+    if (result != GET_CHUNK_STATUS_OK) {
+        write_json_response(CHUNK_UPLOAD_DATABASE_ERROR, "database error", NULL);
+        return;
+    }
+    write_status_success(upload_id, &status);
+}
+
 static int receive_chunk_body(const char *directory, uint64_t expected_size,
                               const char *expected_md5, ReceivedUpload *received)
 {
@@ -313,8 +404,10 @@ int main(void)
 
         if (path && strcmp(path, "/api/uploads/init") == 0) {
             handle_init_request();
-        } else {
+        } else if (path && strstr(path, "/chunks/") != NULL) {
             handle_chunk_request(path);
+        } else {
+            handle_status_request(path);
         }
     }
     return 0;

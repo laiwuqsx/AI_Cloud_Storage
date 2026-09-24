@@ -164,6 +164,129 @@ done:
     return result;
 }
 
+GetChunkStatusResult get_chunk_upload_status(
+    const char *upload_id, const char *user_name, ChunkUploadStatus *status)
+{
+    MYSQL *connection = NULL;
+    MYSQL_STMT *statement = NULL;
+    MYSQL_BIND param[2], output[7];
+    unsigned long param_lengths[2];
+    unsigned long file_name_length = 0;
+    unsigned long file_md5_length = 0;
+    unsigned long status_length = 0;
+    my_ulonglong total_size;
+    my_ulonglong expires_in;
+    unsigned int chunk_size;
+    unsigned int total_chunks;
+    unsigned int chunk_index;
+    int fetch_result;
+    const char *session_sql =
+        "SELECT file_name, file_md5, total_size, chunk_size, total_chunks, "
+        "CASE WHEN status = 'receiving' AND expires_at <= CURRENT_TIMESTAMP "
+        "THEN 'expired' ELSE status END, "
+        "GREATEST(TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP, expires_at), 0) "
+        "FROM chunk_upload_session WHERE upload_id = ? AND user_name = ?";
+    const char *parts_sql =
+        "SELECT chunk_index FROM chunk_upload_part "
+        "WHERE upload_id = ? AND status = 'ready' ORDER BY chunk_index";
+    GetChunkStatusResult result = GET_CHUNK_STATUS_DATABASE_ERROR;
+
+    if (!upload_id || !user_name || !status) return GET_CHUNK_STATUS_DATABASE_ERROR;
+    memset(status, 0, sizeof(*status));
+    connection = connect_database();
+    if (!connection) goto done;
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, session_sql,
+                           (unsigned long)strlen(session_sql)) != 0) goto done;
+    memset(param, 0, sizeof(param));
+    param_lengths[0] = (unsigned long)strlen(upload_id);
+    param_lengths[1] = (unsigned long)strlen(user_name);
+    param[0].buffer_type = MYSQL_TYPE_STRING;
+    param[0].buffer = (void *)upload_id;
+    param[0].length = &param_lengths[0];
+    param[1].buffer_type = MYSQL_TYPE_STRING;
+    param[1].buffer = (void *)user_name;
+    param[1].length = &param_lengths[1];
+    if (mysql_stmt_bind_param(statement, param) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    memset(output, 0, sizeof(output));
+    output[0].buffer_type = MYSQL_TYPE_STRING;
+    output[0].buffer = status->file_name;
+    output[0].buffer_length = sizeof(status->file_name) - 1;
+    output[0].length = &file_name_length;
+    output[1].buffer_type = MYSQL_TYPE_STRING;
+    output[1].buffer = status->file_md5;
+    output[1].buffer_length = sizeof(status->file_md5) - 1;
+    output[1].length = &file_md5_length;
+    output[2].buffer_type = MYSQL_TYPE_LONGLONG;
+    output[2].buffer = &total_size;
+    output[2].is_unsigned = 1;
+    output[3].buffer_type = MYSQL_TYPE_LONG;
+    output[3].buffer = &chunk_size;
+    output[3].is_unsigned = 1;
+    output[4].buffer_type = MYSQL_TYPE_LONG;
+    output[4].buffer = &total_chunks;
+    output[4].is_unsigned = 1;
+    output[5].buffer_type = MYSQL_TYPE_STRING;
+    output[5].buffer = status->status;
+    output[5].buffer_length = sizeof(status->status) - 1;
+    output[5].length = &status_length;
+    output[6].buffer_type = MYSQL_TYPE_LONGLONG;
+    output[6].buffer = &expires_in;
+    output[6].is_unsigned = 1;
+    if (mysql_stmt_bind_result(statement, output) != 0 ||
+        mysql_stmt_store_result(statement) != 0) goto done;
+    fetch_result = mysql_stmt_fetch(statement);
+    if (fetch_result == MYSQL_NO_DATA) {
+        result = GET_CHUNK_STATUS_UNAVAILABLE;
+        goto done;
+    }
+    if (fetch_result != 0 ||
+        file_name_length >= sizeof(status->file_name) ||
+        file_md5_length >= sizeof(status->file_md5) ||
+        status_length >= sizeof(status->status) ||
+        total_chunks == 0 || total_chunks > CHUNK_UPLOAD_MAX_PARTS) goto done;
+    status->file_name[file_name_length] = '\0';
+    status->file_md5[file_md5_length] = '\0';
+    status->status[status_length] = '\0';
+    status->total_size = (uint64_t)total_size;
+    status->chunk_size = chunk_size;
+    status->total_chunks = total_chunks;
+    status->expires_in_seconds = (uint64_t)expires_in;
+
+    mysql_stmt_close(statement);
+    statement = mysql_stmt_init(connection);
+    if (!statement ||
+        mysql_stmt_prepare(statement, parts_sql,
+                           (unsigned long)strlen(parts_sql)) != 0) goto done;
+    memset(param, 0, sizeof(param));
+    param_lengths[0] = (unsigned long)strlen(upload_id);
+    param[0].buffer_type = MYSQL_TYPE_STRING;
+    param[0].buffer = (void *)upload_id;
+    param[0].length = &param_lengths[0];
+    if (mysql_stmt_bind_param(statement, param) != 0 ||
+        mysql_stmt_execute(statement) != 0) goto done;
+    memset(output, 0, sizeof(output));
+    output[0].buffer_type = MYSQL_TYPE_LONG;
+    output[0].buffer = &chunk_index;
+    output[0].is_unsigned = 1;
+    if (mysql_stmt_bind_result(statement, output) != 0 ||
+        mysql_stmt_store_result(statement) != 0) goto done;
+    while ((fetch_result = mysql_stmt_fetch(statement)) == 0) {
+        if (status->ready_count >= CHUNK_UPLOAD_MAX_PARTS ||
+            chunk_index >= status->total_chunks) goto done;
+        status->ready_chunks[status->ready_count++] = chunk_index;
+    }
+    if (fetch_result != MYSQL_NO_DATA) goto done;
+    result = GET_CHUNK_STATUS_OK;
+
+done:
+    if (statement) mysql_stmt_close(statement);
+    if (connection) mysql_close(connection);
+    return result;
+}
+
 static ReserveChunkPartResult find_reserved_part(MYSQL *connection,
                                                  const ChunkUploadPart *part)
 {

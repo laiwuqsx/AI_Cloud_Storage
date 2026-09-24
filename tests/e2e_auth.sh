@@ -193,6 +193,24 @@ chunk_session_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
 [ "$chunk_session_row" = "$user_name|large-video.mp4|$missing_md5|1048593|1048576|2|receiving|1" ] || \
     fail "chunk upload session database state: $chunk_session_row"
 
+initial_chunk_status_response=$(curl --silent --show-error --request GET \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id")
+case "$initial_chunk_status_response" in
+    *'"code":0'*'"status":"receiving"'*'"uploaded_count":0'*'"all_chunks_uploaded":false'*'"uploaded_chunks":[]'*) ;;
+    *) fail "initial chunk status response: $initial_chunk_status_response" ;;
+esac
+
+unauthorized_chunk_status_response=$(curl --silent --show-error --request GET \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: invalid" \
+    "$base_url/api/uploads/$chunk_upload_id")
+case "$unauthorized_chunk_status_response" in
+    *'"code":2'*'"msg":"token error"'*) ;;
+    *) fail "unauthorized chunk status response: $unauthorized_chunk_status_response" ;;
+esac
+
 unauthorized_chunk_response=$(curl --silent --show-error --request PUT \
     --header "X-Upload-User: $user_name" \
     --header "X-Upload-Token: invalid" \
@@ -213,6 +231,15 @@ chunk_upload_response=$(curl --silent --show-error --request PUT \
 case "$chunk_upload_response" in
     *'"code":0'*'"chunk_index":0'*'"idempotent":false'*) ;;
     *) fail "chunk upload response: $chunk_upload_response" ;;
+esac
+
+partial_chunk_status_response=$(curl --silent --show-error --request GET \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id")
+case "$partial_chunk_status_response" in
+    *'"code":0'*'"uploaded_count":1'*'"all_chunks_uploaded":false'*'"uploaded_chunks":[0]'*) ;;
+    *) fail "partial chunk status response: $partial_chunk_status_response" ;;
 esac
 
 chunk_retry_response=$(curl --silent --show-error --request PUT \
@@ -246,6 +273,15 @@ chunk_last_response=$(curl --silent --show-error --request PUT \
 case "$chunk_last_response" in
     *'"code":0'*'"chunk_index":1'*'"idempotent":false'*) ;;
     *) fail "last chunk upload response: $chunk_last_response" ;;
+esac
+
+complete_chunk_status_response=$(curl --silent --show-error --request GET \
+    --header "X-Upload-User: $user_name" \
+    --header "X-Upload-Token: $token" \
+    "$base_url/api/uploads/$chunk_upload_id")
+case "$complete_chunk_status_response" in
+    *'"code":0'*'"uploaded_count":2'*'"all_chunks_uploaded":true'*'"uploaded_chunks":[0,1]'*) ;;
+    *) fail "complete chunk status response: $complete_chunk_status_response" ;;
 esac
 
 chunk_part_row=$(docker compose -f "$compose_file" exec -T mysql sh -c \
