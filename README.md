@@ -40,6 +40,8 @@ FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upl
 
 浏览器客户端模块 `client/upload_client.mjs` 会先以增量 MD5 扫描文件：不超过 10 MiB 时调用现有 multipart 接口，超过阈值时自动执行初始化、顺序切片、逐片 MD5、分片上传和 complete。大文件初始化后会按用户、文件名、大小和 MD5 将 `upload_id` 保存到 `localStorage`（不保存 Token）；再次选择同一文件时先查询服务端状态，只补传缺失的 ready 分片。会话已完成时直接收敛为成功，已失效时自动创建新会话，complete 成功后清除本地记录。模块不依赖前端框架，并通过 `onProgress` 报告 `hashing`、`uploading`、`completing`、`completed` 阶段。运行 `make test-client` 可执行浏览器协议模拟测试。
 
+AI 索引异步化首先建立了状态和事件边界。`file_ai_metadata` 按文件 MD5 全局复用描述与 Embedding；`user_ai_index_entry` 单独记录每个用户是否已把该内容加入自己的 FAISS 索引。事件合同固定为 `FILE_CONTENT_READY`、`USER_FILE_ADDED` 和 `USER_FILE_REMOVED`，并包含基于内容版本或用户文件关系 ID 的稳定幂等键。已有数据库先执行 `sql/migrations/007_ai_index_state.sql`。本阶段尚未接入 Outbox 或 RabbitMQ，上传请求也尚未产生 AI 事件。
+
 ```js
 import { createUploadClient } from "./client/upload_client.mjs";
 

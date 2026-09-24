@@ -86,6 +86,8 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_chunk_storage_tests
 	$(CC) $(CFLAGS) tests/test_chunk_assembler.c common/chunk_assembler.c common/upload_intake.c common/md5.c -o /tmp/ai_cloud_storage_chunk_assembler_tests
 	/tmp/ai_cloud_storage_chunk_assembler_tests
+	$(CC) $(CFLAGS) tests/test_ai_index_event.c common/ai_index_event.c common/user_validation.c common/md5.c -o /tmp/ai_cloud_storage_ai_index_event_tests
+	/tmp/ai_cloud_storage_ai_index_event_tests
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) tests/test_share_code.c common/share_code.c -o /tmp/ai_cloud_storage_share_code_tests $(CRYPTO_LIBS)
 	/tmp/ai_cloud_storage_share_code_tests
 
@@ -96,4 +98,4 @@ test-client:
 	node --test client/upload_client.test.mjs
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_share_code_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_ai_index_event_tests /tmp/ai_cloud_storage_share_code_tests

@@ -146,6 +146,14 @@ if [ "$chunk_part_table_count" = "0" ]; then
         < sql/migrations/006_chunk_upload_part.sql || fail "chunk upload part migration"
 fi
 
+ai_state_table_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('\''file_ai_metadata'\'', '\''user_ai_index_entry'\'');"')
+if [ "$ai_state_table_count" != "2" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/007_ai_index_state.sql || fail "AI index state migration"
+fi
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \
