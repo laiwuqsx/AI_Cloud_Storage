@@ -52,7 +52,7 @@ $(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) $(FILE_REPOSITORY) common/
 $(BIN_DIR)/chunk_upload: src_cgi/chunk_upload_cgi.c $(COMMON) common/chunk_upload_repository.c common/chunk_storage.c common/chunk_assembler.c common/upload_id.c common/upload_intake.c common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/ai_content_repository_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics $(BIN_DIR)/outbox_publisher $(BIN_DIR)/outbox_metrics $(BIN_DIR)/ai_content_worker
+integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/ai_content_repository_probe $(BIN_DIR)/ai_user_index_repository_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics $(BIN_DIR)/outbox_publisher $(BIN_DIR)/outbox_metrics $(BIN_DIR)/ai_content_worker
 
 $(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
@@ -64,6 +64,9 @@ $(BIN_DIR)/share_save_probe: tests/share_save_probe.c $(FILE_REPOSITORY) common/
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/ai_content_repository_probe: tests/ai_content_repository_probe.c common/ai_content_repository.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
+
+$(BIN_DIR)/ai_user_index_repository_probe: tests/ai_user_index_repository_probe.c common/ai_user_index_repository.c common/ai_index_event.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)
@@ -109,6 +112,8 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_ai_index_event_tests
 	$(CC) $(CFLAGS) tests/test_ai_content_task.c common/ai_content_task.c common/ai_index_event.c common/json_util.c -o /tmp/ai_cloud_storage_ai_content_task_tests
 	/tmp/ai_cloud_storage_ai_content_task_tests
+	$(CC) $(CFLAGS) tests/test_ai_user_index_task.c common/ai_user_index_task.c common/ai_index_event.c common/json_util.c -o /tmp/ai_cloud_storage_ai_user_index_task_tests
+	/tmp/ai_cloud_storage_ai_user_index_task_tests
 	@if [ "$(AI_DEPS_AVAILABLE)" = "1" ]; then \
 		$(CC) $(CFLAGS) $(AI_CFLAGS) tests/test_dashscope_client.c common/dashscope_client.c -o /tmp/ai_cloud_storage_dashscope_tests $(AI_LIBS) && \
 		/tmp/ai_cloud_storage_dashscope_tests; \
@@ -125,4 +130,4 @@ test-client:
 	node --test client/upload_client.test.mjs
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_ai_index_event_tests /tmp/ai_cloud_storage_ai_content_task_tests /tmp/ai_cloud_storage_dashscope_tests /tmp/ai_cloud_storage_share_code_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_ai_index_event_tests /tmp/ai_cloud_storage_ai_content_task_tests /tmp/ai_cloud_storage_ai_user_index_task_tests /tmp/ai_cloud_storage_dashscope_tests /tmp/ai_cloud_storage_share_code_tests

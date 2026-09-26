@@ -179,9 +179,21 @@ if [ "$ai_content_fencing_count" != "1" ]; then
         < sql/migrations/010_ai_content_fencing.sql || fail "AI content fencing migration"
 fi
 
+ai_user_index_fencing_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''user_ai_index_entry'\'' AND column_name IN ('\''processing_started_at'\'', '\''processing_event_id'\'', '\''completed_event_id'\'', '\''processing_generation'\'');"')
+if [ "$ai_user_index_fencing_count" != "4" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/011_ai_user_index_fencing.sql || fail "AI user index fencing migration"
+fi
+
 docker compose -f "$compose_file" exec -T fastcgi_app \
     /app/bin_cgi/ai_content_repository_probe "$transaction_md5" || \
     fail "AI content repository state machine"
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/ai_user_index_repository_probe "$transaction_md5" || \
+    fail "AI user index repository state machine"
 
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \

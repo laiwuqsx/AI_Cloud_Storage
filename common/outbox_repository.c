@@ -55,6 +55,8 @@ static int execute_user_state(MYSQL *connection, const AiIndexEvent *event)
         "status = 'pending', vector_id = NULL, "
         "embedding_version = VALUES(embedding_version), index_version = 0, "
         "retry_count = 0, last_error = '', next_attempt_at = CURRENT_TIMESTAMP, "
+        "processing_started_at = NULL, processing_event_id = NULL, "
+        "completed_event_id = NULL, processing_generation = processing_generation + 1, "
         "indexed_at = NULL";
     const char *removed_sql =
         "INSERT INTO user_ai_index_entry "
@@ -64,6 +66,14 @@ static int execute_user_state(MYSQL *connection, const AiIndexEvent *event)
         "status = IF(user_file_id = VALUES(user_file_id), 'removing', status), "
         "retry_count = IF(user_file_id = VALUES(user_file_id), 0, retry_count), "
         "last_error = IF(user_file_id = VALUES(user_file_id), '', last_error), "
+        "processing_started_at = IF(user_file_id = VALUES(user_file_id), "
+        "NULL, processing_started_at), "
+        "processing_event_id = IF(user_file_id = VALUES(user_file_id), "
+        "NULL, processing_event_id), "
+        "completed_event_id = IF(user_file_id = VALUES(user_file_id), "
+        "NULL, completed_event_id), "
+        "processing_generation = IF(user_file_id = VALUES(user_file_id), "
+        "processing_generation + 1, processing_generation), "
         "next_attempt_at = IF(user_file_id = VALUES(user_file_id), "
         "CURRENT_TIMESTAMP, next_attempt_at)";
     const char *sql = event->type == AI_INDEX_EVENT_USER_FILE_ADDED

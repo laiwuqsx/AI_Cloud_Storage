@@ -10,7 +10,7 @@
 Nginx -> C FastCGI -> MySQL / Redis
 ```
 
-已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传、受控私有/分享下载、逻辑删除、可撤销/可过期的随机分享链接、可选提取码，以及登录后转存。大文件分片上传已完成会话初始化、单分片接收和断点状态查询；完整文件合并、前端和 FAISS 检索仍在后续阶段。
+已实现注册、登录、退出登录、用户文件列表、MD5 上传预检、普通文件上传、受控私有/分享下载、逻辑删除、可撤销/可过期的随机分享链接、可选提取码，以及登录后转存。大文件分片上传已经完成初始化、分片接收、断点续传、完整文件合并和最终入库；完整前端和 FAISS 检索仍在后续阶段。
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交。两个用户同时上传相同内容时，由 `file_info.md5` 唯一约束裁决胜者；失败方删除自己多上传的 FastDFS 对象，再以事务关联胜出的物理文件并增加引用数。两个请求最终关联同一个 storage key。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
@@ -56,6 +56,8 @@ Compose 中的 `outbox_publisher` 会以数据库锁并发安全地领取到期�
       --profile ai up -d --build ai_content_worker
 
 可通过 `DASHSCOPE_BASE_URL`、`DASHSCOPE_VISION_MODEL`、`DASHSCOPE_EMBEDDING_MODEL`、`AI_CONTENT_MAX_RETRIES`、`AI_CONTENT_RETRY_SECONDS` 和 `AI_CONTENT_STALE_SECONDS` 调整模型和重试策略。当前完成的是全局内容描述/Embedding，下一阶段仍需消费 `ai.user-index`，将 ready 向量写入各用户自己的 FAISS 索引文件。
+
+用户索引 Worker 的任务状态机也已完成。`USER_FILE_ADDED/REMOVED` 消息会严格校验 user、MD5、`user_file_id` 和 embedding version；添加任务只有在用户关系仍存在且全局内容向量 ready、维度恰为 1024 时才能从 `pending/waiting_content` 领取为 `indexing`，否则等待内容生成或收敛为 stale。删除任务只有在对应用户关系已经不存在时才能领取为 `removing`。`user_file_id` 直接作为稳定 FAISS `vector_id`，避免重复消息分配重复 ID；event ID + generation fencing、重试时间、终止失败及 stale lease 恢复与内容 Worker 使用相同的可靠性规则。已有数据库继续执行 `sql/migrations/011_ai_user_index_fencing.sql`。目前尚未写入真实 FAISS 文件，下一步是用户级串行化、临时索引构建和原子替换。
 
 ```js
 import { createUploadClient } from "./client/upload_client.mjs";
