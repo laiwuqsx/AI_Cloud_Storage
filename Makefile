@@ -10,6 +10,13 @@ REDIS_LIBS := -lhiredis
 OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
 CRYPTO_CFLAGS := $(if $(OPENSSL_PREFIX),-I$(OPENSSL_PREFIX)/include)
 CRYPTO_LIBS := $(if $(OPENSSL_PREFIX),-L$(OPENSSL_PREFIX)/lib) -lcrypto
+CURL_HOME := $(shell brew --prefix curl 2>/dev/null)
+CJSON_HOME := $(shell brew --prefix cjson 2>/dev/null)
+CURL_PREFIX := $(if $(wildcard $(CURL_HOME)/include/curl/curl.h),$(CURL_HOME))
+CJSON_PREFIX := $(if $(wildcard $(CJSON_HOME)/include/cjson/cJSON.h),$(CJSON_HOME))
+AI_DEPS_AVAILABLE := $(shell test -f "$(CJSON_PREFIX)/include/cjson/cJSON.h" -o -f /usr/include/cjson/cJSON.h && echo 1)
+AI_CFLAGS := $(if $(CURL_PREFIX),-I$(CURL_PREFIX)/include) $(if $(CJSON_PREFIX),-I$(CJSON_PREFIX)/include)
+AI_LIBS := $(if $(CURL_PREFIX),-L$(CURL_PREFIX)/lib) $(if $(CJSON_PREFIX),-L$(CJSON_PREFIX)/lib) -lcurl -lcjson -lm
 
 .PHONY: all integration-tools test test-client e2e clean
 
@@ -45,7 +52,7 @@ $(BIN_DIR)/download: src_cgi/download_cgi.c $(COMMON) $(FILE_REPOSITORY) common/
 $(BIN_DIR)/chunk_upload: src_cgi/chunk_upload_cgi.c $(COMMON) common/chunk_upload_repository.c common/chunk_storage.c common/chunk_assembler.c common/upload_id.c common/upload_intake.c common/md5.c common/user_validation.c common/token_service.c $(FILE_REPOSITORY) common/storage_client.c common/fastdfs_storage_client.c common/upload_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
 
-integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics
+integration-tools: $(BIN_DIR)/upload_repository_probe $(BIN_DIR)/cleanup_repository_probe $(BIN_DIR)/share_save_probe $(BIN_DIR)/ai_content_repository_probe $(BIN_DIR)/cleanup_worker $(BIN_DIR)/cleanup_metrics $(BIN_DIR)/outbox_publisher $(BIN_DIR)/outbox_metrics $(BIN_DIR)/ai_content_worker
 
 $(BIN_DIR)/upload_repository_probe: tests/upload_repository_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
@@ -56,11 +63,23 @@ $(BIN_DIR)/cleanup_repository_probe: tests/cleanup_repository_probe.c common/cle
 $(BIN_DIR)/share_save_probe: tests/share_save_probe.c $(FILE_REPOSITORY) common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
+$(BIN_DIR)/ai_content_repository_probe: tests/ai_content_repository_probe.c common/ai_content_repository.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
+
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_metrics: tools/cleanup_metrics.c common/cleanup_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
+
+$(BIN_DIR)/outbox_publisher: tools/outbox_publisher.c common/outbox_repository.c common/ai_index_event.c common/rabbitmq_event_publisher.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS) -lrabbitmq
+
+$(BIN_DIR)/outbox_metrics: tools/outbox_metrics.c common/outbox_repository.c common/ai_index_event.c common/rabbitmq_event_publisher.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS) -lrabbitmq
+
+$(BIN_DIR)/ai_content_worker: tools/ai_content_worker.c common/ai_content_repository.c common/ai_content_task.c common/ai_index_event.c common/json_util.c common/dashscope_client.c common/rabbitmq_content_consumer.c common/storage_client.c common/fastdfs_storage_client.c common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(AI_CFLAGS) $^ -o $@ $(MYSQL_LIBS) -lrabbitmq $(AI_LIBS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -88,6 +107,14 @@ test: tests/test_json_util.c common/json_util.c
 	/tmp/ai_cloud_storage_chunk_assembler_tests
 	$(CC) $(CFLAGS) tests/test_ai_index_event.c common/ai_index_event.c -o /tmp/ai_cloud_storage_ai_index_event_tests
 	/tmp/ai_cloud_storage_ai_index_event_tests
+	$(CC) $(CFLAGS) tests/test_ai_content_task.c common/ai_content_task.c common/ai_index_event.c common/json_util.c -o /tmp/ai_cloud_storage_ai_content_task_tests
+	/tmp/ai_cloud_storage_ai_content_task_tests
+	@if [ "$(AI_DEPS_AVAILABLE)" = "1" ]; then \
+		$(CC) $(CFLAGS) $(AI_CFLAGS) tests/test_dashscope_client.c common/dashscope_client.c -o /tmp/ai_cloud_storage_dashscope_tests $(AI_LIBS) && \
+		/tmp/ai_cloud_storage_dashscope_tests; \
+	else \
+		echo "dashscope_client tests skipped: cJSON development headers unavailable (covered by Docker build)"; \
+	fi
 	$(CC) $(CFLAGS) $(CRYPTO_CFLAGS) tests/test_share_code.c common/share_code.c -o /tmp/ai_cloud_storage_share_code_tests $(CRYPTO_LIBS)
 	/tmp/ai_cloud_storage_share_code_tests
 
@@ -98,4 +125,4 @@ test-client:
 	node --test client/upload_client.test.mjs
 
 clean:
-	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_ai_index_event_tests /tmp/ai_cloud_storage_share_code_tests
+	rm -rf $(BIN_DIR) /tmp/ai_cloud_storage_tests /tmp/ai_cloud_storage_auth_tests /tmp/ai_cloud_storage_upload_tests /tmp/ai_cloud_storage_fastdfs_tests /tmp/ai_cloud_storage_intake_tests /tmp/ai_cloud_storage_multipart_tests /tmp/ai_cloud_storage_share_id_tests /tmp/ai_cloud_storage_upload_id_tests /tmp/ai_cloud_storage_chunk_storage_tests /tmp/ai_cloud_storage_chunk_assembler_tests /tmp/ai_cloud_storage_ai_index_event_tests /tmp/ai_cloud_storage_ai_content_task_tests /tmp/ai_cloud_storage_dashscope_tests /tmp/ai_cloud_storage_share_code_tests

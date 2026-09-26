@@ -15,10 +15,13 @@ typedef struct {
     void *context;
     int (*upload)(void *context, const char *local_path, StoredObject *stored_object);
     int (*remove)(void *context, const char *storage_key);
+    int (*download)(void *context, const char *storage_key, const char *local_path);
 } StorageClient;
 
 int storage_client_upload(const StorageClient *client, const char *local_path,
                           StoredObject *stored_object);
 int storage_client_remove(const StorageClient *client, const char *storage_key);
+int storage_client_download(const StorageClient *client, const char *storage_key,
+                            const char *local_path);
 
 #endif

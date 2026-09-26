@@ -159,6 +159,22 @@ static int remove_file(void *opaque, const char *storage_key)
     return run_context_command(context, arguments, NULL, 0);
 }
 
+static int download_file(void *opaque, const char *storage_key,
+                         const char *local_path)
+{
+    FastDfsStorageContext *context = opaque;
+    const char *arguments[5];
+
+    if (!valid_storage_key(storage_key) || !local_path || local_path[0] == '\0')
+        return -1;
+    arguments[0] = context->download_command;
+    arguments[1] = context->client_config_path;
+    arguments[2] = storage_key;
+    arguments[3] = local_path;
+    arguments[4] = NULL;
+    return run_context_command(context, arguments, NULL, 0);
+}
+
 void fastdfs_storage_context_init(FastDfsStorageContext *context,
                                   const char *client_config_path,
                                   const char *public_base_url)
@@ -169,6 +185,7 @@ void fastdfs_storage_context_init(FastDfsStorageContext *context,
     context->public_base_url = public_base_url;
     context->upload_command = "fdfs_upload_file";
     context->delete_command = "fdfs_delete_file";
+    context->download_command = "fdfs_download_file";
 }
 
 int fastdfs_storage_client_init(StorageClient *client, FastDfsStorageContext *context)
@@ -176,9 +193,11 @@ int fastdfs_storage_client_init(StorageClient *client, FastDfsStorageContext *co
     if (!client || !context || !context->client_config_path ||
         context->client_config_path[0] == '\0' || !context->public_base_url ||
         context->public_base_url[0] == '\0' || !context->upload_command ||
-        !context->delete_command) return -1;
+        !context->delete_command || !context->download_command) return -1;
+    memset(client, 0, sizeof(*client));
     client->context = context;
     client->upload = upload_file;
     client->remove = remove_file;
+    client->download = download_file;
     return 0;
 }

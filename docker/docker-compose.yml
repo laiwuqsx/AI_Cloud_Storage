@@ -25,6 +25,21 @@ services:
       timeout: 3s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ai-cloud}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-local-rabbitmq-password}
+    ports:
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   tracker:
     build:
       context: ..
@@ -119,6 +134,73 @@ services:
       retries: 3
       start_period: 10s
 
+  outbox_publisher:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/Dockerfile
+      target: fastcgi_app
+    command: ["/app/bin_cgi/outbox_publisher", "--watch", "100"]
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-dev-password}
+      MYSQL_DATABASE: ai_cloud_storage
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-ai-cloud}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-local-rabbitmq-password}
+      OUTBOX_MAX_RETRIES: ${OUTBOX_MAX_RETRIES:-8}
+      OUTBOX_RETRY_BASE_SECONDS: ${OUTBOX_RETRY_BASE_SECONDS:-5}
+      OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-2}
+      OUTBOX_STALE_SECONDS: ${OUTBOX_STALE_SECONDS:-300}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/bin_cgi/outbox_metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  ai_content_worker:
+    profiles: ["ai"]
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/Dockerfile
+      target: fastcgi_app
+    command: ["/app/bin_cgi/ai_content_worker"]
+    restart: on-failure
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-dev-password}
+      MYSQL_DATABASE: ai_cloud_storage
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-ai-cloud}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-local-rabbitmq-password}
+      FASTDFS_CLIENT_CONFIG: /etc/fdfs/client.conf
+      FASTDFS_PUBLIC_BASE_URL: ${FASTDFS_PUBLIC_BASE_URL:-http://localhost:8080/storage}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      DASHSCOPE_VISION_MODEL: ${DASHSCOPE_VISION_MODEL:-qwen-vl-plus}
+      DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
+      AI_CONTENT_MAX_RETRIES: ${AI_CONTENT_MAX_RETRIES:-5}
+      AI_CONTENT_RETRY_SECONDS: ${AI_CONTENT_RETRY_SECONDS:-15}
+      AI_CONTENT_STALE_SECONDS: ${AI_CONTENT_STALE_SECONDS:-300}
+      AI_CONTENT_TEMP_DIR: /tmp
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -136,3 +218,4 @@ volumes:
   fastdfs_storage_meta:
   fastdfs_storage_data:
   chunk_upload_data:
+  rabbitmq_data:

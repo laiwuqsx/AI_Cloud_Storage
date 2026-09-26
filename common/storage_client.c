@@ -19,3 +19,11 @@ int storage_client_remove(const StorageClient *client, const char *storage_key)
     if (!client || !client->remove || !storage_key || storage_key[0] == '\0') return -1;
     return client->remove(client->context, storage_key);
 }
+
+int storage_client_download(const StorageClient *client, const char *storage_key,
+                            const char *local_path)
+{
+    if (!client || !client->download || !storage_key || storage_key[0] == '\0' ||
+        !local_path || local_path[0] == '\0') return -1;
+    return client->download(client->context, storage_key, local_path);
+}

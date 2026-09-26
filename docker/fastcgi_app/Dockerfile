@@ -52,7 +52,10 @@ FROM fastdfs_runtime AS fastcgi_app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     libfcgi-dev \
+    libcjson-dev \
+    libcurl4-openssl-dev \
     libhiredis-dev \
+    librabbitmq-dev \
     libssl-dev \
     spawn-fcgi \
     && rm -rf /var/lib/apt/lists/*

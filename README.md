@@ -14,7 +14,7 @@ Nginx -> C FastCGI -> MySQL / Redis
 
 首次普通上传已经具备内部入库事务：新的 `file_info` 和上传者的 `user_file_list` 必须同时提交。两个用户同时上传相同内容时，由 `file_info.md5` 唯一约束裁决胜者；失败方删除自己多上传的 FastDFS 对象，再以事务关联胜出的物理文件并增加引用数。两个请求最终关联同一个 storage key。`mysql_commit()` 返回错误会标记为“提交结果未知”，供后续 FastDFS 补偿层查询确认后再决定是否删除物理文件。
 
-上传编排通过 `StorageClient` 的 `upload/remove` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。这些异常分支已用假存储覆盖；Docker 开发栈也已接入真实 FastDFS 服务。
+上传编排通过 `StorageClient` 的 `upload/remove/download` 回调与具体存储解耦。入库失败或并发产生重复物理对象时执行删除补偿；提交结果未知时先按 user、MD5、storage_key 查询确认，仍无法确认则保留对象并报告待处理状态，避免误删已被提交记录引用的文件。这些异常分支已用假存储覆盖；Docker 开发栈也已接入真实 FastDFS 服务。
 
 `/api/md5` 只检查当前用户是否已经拥有文件，不再允许仅凭全局 MD5 认领其他用户的私有内容。未拥有时统一返回需要普通上传，不泄露该 MD5 是否存在；普通上传会计算服务端 MD5，在验证真实字节后仍可复用已有物理对象并清理重复上传的 FastDFS 副本。
 
@@ -42,7 +42,20 @@ FastDFS 的 `StorageClient` 适配器使用 `fork/execvp` 分别调用 `fdfs_upl
 
 AI 索引异步化首先建立了状态和事件边界。`file_ai_metadata` 按文件 MD5 全局复用描述与 Embedding；`user_ai_index_entry` 单独记录每个用户是否已把该内容加入自己的 FAISS 索引。事件合同固定为 `FILE_CONTENT_READY`、`USER_FILE_ADDED` 和 `USER_FILE_REMOVED`，并包含基于内容版本或用户文件关系 ID 的稳定幂等键。已有数据库先执行 `sql/migrations/007_ai_index_state.sql`。
 
-Transactional Outbox 使用 `outbox_event` 作为可靠事件源。首次上传、验证后物理去重、分享转存和用户删除文件都会在修改 `file_info`/`user_file_list` 的同一个 MySQL 事务中初始化 AI 状态并写入事件；Outbox 写入失败会使业务事务一起回滚。唯一 `idempotency_key` 允许事务重试而不产生重复事件。已有数据库在 `007` 后继续执行 `sql/migrations/008_ai_outbox.sql`。当前尚未启动 RabbitMQ 或 publisher，因此事件会保持 `pending`，但不会因消息系统不可用而影响上传或丢失。
+Transactional Outbox 使用 `outbox_event` 作为可靠事件源。首次上传、验证后物理去重、分享转存和用户删除文件都会在修改 `file_info`/`user_file_list` 的同一个 MySQL 事务中初始化 AI 状态并写入事件；Outbox 写入失败会使业务事务一起回滚。唯一 `idempotency_key` 允许事务重试而不产生重复事件。已有数据库在 `007` 后继续执行 `sql/migrations/008_ai_outbox.sql`。
+
+Compose 中的 `outbox_publisher` 会以数据库锁并发安全地领取到期事件，按照内容任务和用户索引任务分别发布到 RabbitMQ 的 `ai.content`、`ai.user-index` 持久化队列。消息携带稳定的 Outbox ID，只有收到 broker confirm 后才把数据库事件标记为 `published`；连接失败会指数退避，进程崩溃遗留的 `publishing` 事件会重新入队。因此确认结果丢失最多造成重复消息，而不会静默丢失，后续消费者必须以事件 ID 和业务状态实现幂等。管理界面默认位于 `http://localhost:15672`。
+
+`outbox_metrics` 以 Prometheus 文本格式输出各 Outbox 状态数量、当前可发布数量、最老 pending/ready 事件年龄及 AI 死信队列深度；Publisher 容器使用它同时检查 MySQL 和 RabbitMQ 连通性。
+
+内容 Worker 已完成图片内容向量化闭环：`FILE_CONTENT_READY` 载荷只接受规范 MD5 和正版本号；Worker 通过行锁把匹配版本从 `pending` 原子领取为 `processing`，并记录 Outbox event ID 与递增 generation 组成处理租约。它从 `ai.content` 手动 ACK 消费消息，按 storage key 将 FastDFS 私有对象下载到权限受限的随机临时目录，支持 `jpg/jpeg/png/webp/gif`，再以 Base64 Data URL 调用 DashScope 视觉模型生成中文描述，并用 `text-embedding-v4` 生成、校验和 L2 归一化 1024 维向量，最后写回 `file_ai_metadata`。只有落库成功才 ACK；限流、网络及服务端错误会退避重试，参数、鉴权或不支持类型会进入 `failed`。重复消息、进程中断和迟到结果由 event ID + generation 租约收敛，中断超时的 processing 会恢复为 pending。已有数据库在 `008` 后依次执行 `sql/migrations/009_ai_content_lease.sql`、`010_ai_content_fencing.sql`。
+
+`ai_content_worker` 使用 Compose 的 `ai` profile，不会随默认开发栈启动；未配置 `DASHSCOPE_API_KEY` 时进程会在连接 RabbitMQ 前退出，确保不会取走消息。配置密钥后可显式启动：
+
+    DASHSCOPE_API_KEY=<your-key> docker compose -f docker/docker-compose.yml \
+      --profile ai up -d --build ai_content_worker
+
+可通过 `DASHSCOPE_BASE_URL`、`DASHSCOPE_VISION_MODEL`、`DASHSCOPE_EMBEDDING_MODEL`、`AI_CONTENT_MAX_RETRIES`、`AI_CONTENT_RETRY_SECONDS` 和 `AI_CONTENT_STALE_SECONDS` 调整模型和重试策略。当前完成的是全局内容描述/Embedding，下一阶段仍需消费 `ai.user-index`，将 ready 向量写入各用户自己的 FAISS 索引文件。
 
 ```js
 import { createUploadClient } from "./client/upload_client.mjs";
@@ -126,3 +139,8 @@ Docker 守护进程运行后，在项目根目录执行：
 
     docker compose -f docker/docker-compose.yml exec -T cleanup_worker \
       /app/bin_cgi/cleanup_metrics
+
+查看 Outbox 和 AI 死信队列指标：
+
+    docker compose -f docker/docker-compose.yml exec -T outbox_publisher \
+      /app/bin_cgi/outbox_metrics

@@ -98,7 +98,7 @@ static int fake_schedule_cleanup(void *context, const char *storage_key,
 
 static FirstUploadResult run_upload(FakeState *state, StoredObject *stored)
 {
-    StorageClient storage = {state, fake_upload, fake_remove};
+    StorageClient storage = {state, fake_upload, fake_remove, NULL};
     UploadRepository repository = {
         .context = state,
         .record = fake_record,

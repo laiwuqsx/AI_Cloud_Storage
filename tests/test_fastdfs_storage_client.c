@@ -7,6 +7,7 @@ typedef struct {
     int result;
     int upload_calls;
     int delete_calls;
+    int download_calls;
     const char *upload_output;
     const char *expected_local_path;
 } FakeRunnerState;
@@ -16,8 +17,9 @@ static int fake_runner(void *opaque, const char *const arguments[],
 {
     FakeRunnerState *state = opaque;
 
-    if (strcmp(arguments[1], "/etc/fdfs/client.conf") != 0 || arguments[3] != NULL) return -1;
+    if (strcmp(arguments[1], "/etc/fdfs/client.conf") != 0) return -1;
     if (strcmp(arguments[0], "fdfs_upload_file") == 0) {
+        if (arguments[3] != NULL) return -1;
         ++state->upload_calls;
         if (strcmp(arguments[2], state->expected_local_path) != 0) return -1;
         if (state->result != 0) return state->result;
@@ -25,8 +27,16 @@ static int fake_runner(void *opaque, const char *const arguments[],
         return 0;
     }
     if (strcmp(arguments[0], "fdfs_delete_file") == 0) {
+        if (arguments[3] != NULL) return -1;
         ++state->delete_calls;
         if (strcmp(arguments[2], "group1/M00/00/00/demo.txt") != 0) return -1;
+        return state->result;
+    }
+    if (strcmp(arguments[0], "fdfs_download_file") == 0) {
+        ++state->download_calls;
+        if (strcmp(arguments[2], "group1/M00/00/00/demo.txt") != 0 ||
+            strcmp(arguments[3], state->expected_local_path) != 0 ||
+            arguments[4] != NULL) return -1;
         return state->result;
     }
     return -1;
@@ -63,6 +73,9 @@ int main(void)
            "public URL");
     EXPECT(storage_client_remove(&client, stored.storage_key) == 0, "delete command");
     EXPECT(state.delete_calls == 1, "delete call count");
+    EXPECT(storage_client_download(&client, stored.storage_key, local_path) == 0,
+           "download command");
+    EXPECT(state.download_calls == 1, "download call count");
 
     state.result = -1;
     EXPECT(storage_client_upload(&client, local_path, &stored) != 0,
@@ -74,6 +87,8 @@ int main(void)
            "unsafe storage key is rejected");
     EXPECT(storage_client_remove(&client, "../unsafe-file") != 0,
            "unsafe delete key is rejected");
+    EXPECT(storage_client_download(&client, "../unsafe-file", local_path) != 0,
+           "unsafe download key is rejected");
 
     fastdfs_storage_context_init(&context, NULL, "http://files.local");
     EXPECT(fastdfs_storage_client_init(&client, &context) != 0,

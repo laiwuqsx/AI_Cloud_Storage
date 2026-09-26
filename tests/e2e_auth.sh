@@ -163,6 +163,26 @@ if [ "$outbox_schema_count" != "2" ]; then
         < sql/migrations/008_ai_outbox.sql || fail "AI outbox migration"
 fi
 
+ai_content_lease_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''file_ai_metadata'\'' AND column_name IN ('\''processing_event_id'\'', '\''completed_event_id'\'');"')
+if [ "$ai_content_lease_count" != "2" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/009_ai_content_lease.sql || fail "AI content lease migration"
+fi
+
+ai_content_fencing_count=$(docker compose -f "$compose_file" exec -T mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names ai_cloud_storage -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '\''file_ai_metadata'\'' AND column_name = '\''processing_generation'\'';"')
+if [ "$ai_content_fencing_count" != "1" ]; then
+    docker compose -f "$compose_file" exec -T mysql sh -c \
+        'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_cloud_storage' \
+        < sql/migrations/010_ai_content_fencing.sql || fail "AI content fencing migration"
+fi
+
+docker compose -f "$compose_file" exec -T fastcgi_app \
+    /app/bin_cgi/ai_content_repository_probe "$transaction_md5" || \
+    fail "AI content repository state machine"
+
 register_response=$(curl --silent --show-error --request POST \
     --header "Content-Type: application/json" \
     --data "{\"user\":\"$user_name\",\"nickname\":\"$nickname\",\"password\":\"$password_md5\"}" \

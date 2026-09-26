@@ -13,6 +13,7 @@ typedef struct {
     const char *public_base_url;
     const char *upload_command;
     const char *delete_command;
+    const char *download_command;
     FastDfsCommandRunner command_runner;
     void *command_context;
 } FastDfsStorageContext;
