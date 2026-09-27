@@ -11,5 +11,6 @@ spawn-fcgi -n -a 0.0.0.0 -p 10006 -f /app/bin_cgi/upload &
 spawn-fcgi -n -a 0.0.0.0 -p 10007 -f /app/bin_cgi/share &
 spawn-fcgi -n -a 0.0.0.0 -p 10008 -f /app/bin_cgi/download &
 spawn-fcgi -n -a 0.0.0.0 -p 10009 -f /app/bin_cgi/chunk_upload &
+spawn-fcgi -n -a 0.0.0.0 -p 10010 -f /app/bin_cgi/ai_search &
 
 wait

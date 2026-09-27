@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ai_user_index_repository.h"
+#include "ai_search_repository.h"
 #include "runtime_config.h"
 
 static int valid_md5(const char *value)
@@ -71,6 +72,9 @@ int main(int argc, char **argv)
     AiUserIndexTask add_task, remove_task;
     AiUserIndexSource source;
     AiUserIndexSnapshot snapshot;
+    FaissSearchResult candidates[2];
+    AiSearchFile search_files[2];
+    size_t search_count;
     int recovered;
     int ok = 0;
 
@@ -163,6 +167,16 @@ int main(int argc, char **argv)
         complete_ai_user_index_add(&add_task, 1, source.lease_generation) != 0 ||
         claim_ai_user_index_task(&add_task, &source) !=
             AI_USER_INDEX_ALREADY_APPLIED) goto cleanup;
+    memset(candidates, 0, sizeof(candidates));
+    candidates[0].vector_id = relation_id;
+    candidates[0].score = 0.9F;
+    candidates[1].vector_id = relation_id + 999999ULL;
+    candidates[1].score = 0.8F;
+    if (filter_owned_ai_search_results(user_name, candidates, 2, search_files,
+                                       2, &search_count) != 0 ||
+        search_count != 1 || search_files[0].user_file_id != relation_id ||
+        strcmp(search_files[0].md5, argv[1]) != 0 ||
+        search_files[0].score != candidates[0].score) goto cleanup;
 
     snprintf(sql, sizeof(sql),
         "DELETE FROM user_file_list WHERE id = %llu", relation_id);

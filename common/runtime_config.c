@@ -40,7 +40,11 @@ static ConfigEntry entries[] = {
     {"AI_CONTENT_MAX_RETRIES", NULL},
     {"AI_CONTENT_RETRY_SECONDS", NULL},
     {"AI_CONTENT_STALE_SECONDS", NULL},
-    {"AI_CONTENT_TEMP_DIR", NULL}
+    {"AI_CONTENT_TEMP_DIR", NULL},
+    {"FAISS_INDEX_DIR", NULL},
+    {"AI_INDEX_MAX_RETRIES", NULL},
+    {"AI_INDEX_RETRY_SECONDS", NULL},
+    {"AI_INDEX_STALE_SECONDS", NULL}
 };
 static int initialized;
 

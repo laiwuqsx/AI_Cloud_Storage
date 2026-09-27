@@ -24,7 +24,7 @@ FAISS_DEPS_AVAILABLE := $(shell test -f /usr/include/faiss/Index.h && echo 1)
 
 .PHONY: all integration-tools test test-client e2e clean
 
-all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile $(BIN_DIR)/logout $(BIN_DIR)/upload $(BIN_DIR)/share $(BIN_DIR)/download $(BIN_DIR)/chunk_upload
+all: $(BIN_DIR)/login $(BIN_DIR)/register $(BIN_DIR)/myfiles $(BIN_DIR)/md5 $(BIN_DIR)/dealfile $(BIN_DIR)/logout $(BIN_DIR)/upload $(BIN_DIR)/share $(BIN_DIR)/download $(BIN_DIR)/chunk_upload $(BIN_DIR)/ai_search
 
 $(BIN_DIR)/login: src_cgi/login_cgi.c $(COMMON) common/md5.c common/user_validation.c common/user_repository.c common/token_service.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS)
@@ -70,7 +70,7 @@ $(BIN_DIR)/share_save_probe: tests/share_save_probe.c $(FILE_REPOSITORY) common/
 $(BIN_DIR)/ai_content_repository_probe: tests/ai_content_repository_probe.c common/ai_content_repository.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
-$(BIN_DIR)/ai_user_index_repository_probe: tests/ai_user_index_repository_probe.c common/ai_user_index_repository.c common/ai_index_event.c common/runtime_config.c | $(BIN_DIR)
+$(BIN_DIR)/ai_user_index_repository_probe: tests/ai_user_index_repository_probe.c common/ai_user_index_repository.c common/ai_search_repository.c common/ai_index_event.c common/runtime_config.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(MYSQL_LIBS)
 
 $(BIN_DIR)/cleanup_worker: tools/cleanup_worker.c common/cleanup_repository.c common/runtime_config.c common/storage_client.c common/fastdfs_storage_client.c | $(BIN_DIR)
@@ -111,6 +111,30 @@ $(BIN_DIR)/faiss_worker_md5.o: common/md5.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BIN_DIR)/faiss_index_store.o: common/faiss_index_store.cpp | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+AI_SEARCH_C_OBJECTS := $(BIN_DIR)/ai_search_main.o $(BIN_DIR)/ai_search_repository.o $(BIN_DIR)/ai_search_json.o $(BIN_DIR)/ai_search_http.o $(BIN_DIR)/ai_search_config.o $(BIN_DIR)/ai_search_md5.o $(BIN_DIR)/ai_search_validation.o $(BIN_DIR)/ai_search_token.o $(BIN_DIR)/ai_search_dashscope.o
+
+$(BIN_DIR)/ai_search: $(AI_SEARCH_C_OBJECTS) $(BIN_DIR)/faiss_index_store.o
+	$(CXX) $^ -o $@ $(FCGI_LIBS) $(MYSQL_LIBS) $(REDIS_LIBS) $(AI_LIBS) $(FAISS_LIBS)
+
+$(BIN_DIR)/ai_search_main.o: src_cgi/ai_search_cgi.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(AI_CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_repository.o: common/ai_search_repository.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_json.o: common/json_util.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_http.o: common/http_response.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_config.o: common/runtime_config.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_md5.o: common/md5.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_validation.o: common/user_validation.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_token.o: common/token_service.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR)/ai_search_dashscope.o: common/dashscope_client.c | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(AI_CFLAGS) -c $< -o $@
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

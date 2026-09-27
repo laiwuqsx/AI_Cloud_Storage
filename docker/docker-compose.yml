@@ -95,8 +95,13 @@ services:
       CLEANUP_MAX_RETRIES: ${CLEANUP_MAX_RETRIES:-5}
       CLEANUP_RETRY_BASE_SECONDS: ${CLEANUP_RETRY_BASE_SECONDS:-30}
       CHUNK_UPLOAD_DIR: /data/chunk-uploads
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
+      FAISS_INDEX_DIR: /data/faiss/users
     volumes:
       - chunk_upload_data:/data/chunk-uploads
+      - faiss_index_data:/data/faiss:ro
     depends_on:
       mysql:
         condition: service_healthy
