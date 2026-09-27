@@ -20,6 +20,9 @@ typedef struct {
 int rabbitmq_content_consumer_open(RabbitMqContentConsumer *consumer,
                                    const char *host, int port,
                                    const char *user, const char *password);
+int rabbitmq_user_index_consumer_open(RabbitMqContentConsumer *consumer,
+                                      const char *host, int port,
+                                      const char *user, const char *password);
 /* Returns 0 for a delivery, 1 for a timeout, and -1 for a connection error. */
 int rabbitmq_content_consumer_receive(RabbitMqContentConsumer *consumer,
                                       RabbitMqContentDelivery *delivery,

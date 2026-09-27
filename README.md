@@ -55,9 +55,9 @@ Compose 中的 `outbox_publisher` 会以数据库锁并发安全地领取到期�
     DASHSCOPE_API_KEY=<your-key> docker compose -f docker/docker-compose.yml \
       --profile ai up -d --build ai_content_worker
 
-可通过 `DASHSCOPE_BASE_URL`、`DASHSCOPE_VISION_MODEL`、`DASHSCOPE_EMBEDDING_MODEL`、`AI_CONTENT_MAX_RETRIES`、`AI_CONTENT_RETRY_SECONDS` 和 `AI_CONTENT_STALE_SECONDS` 调整模型和重试策略。当前完成的是全局内容描述/Embedding，下一阶段仍需消费 `ai.user-index`，将 ready 向量写入各用户自己的 FAISS 索引文件。
+可通过 `DASHSCOPE_BASE_URL`、`DASHSCOPE_VISION_MODEL`、`DASHSCOPE_EMBEDDING_MODEL`、`AI_CONTENT_MAX_RETRIES`、`AI_CONTENT_RETRY_SECONDS` 和 `AI_CONTENT_STALE_SECONDS` 调整模型和重试策略。全局内容描述/Embedding 完成后，下面的用户索引 Worker 会消费 `ai.user-index`，把 ready 向量写入各用户自己的 FAISS 索引文件。
 
-用户索引 Worker 的任务状态机也已完成。`USER_FILE_ADDED/REMOVED` 消息会严格校验 user、MD5、`user_file_id` 和 embedding version；添加任务只有在用户关系仍存在且全局内容向量 ready、维度恰为 1024 时才能从 `pending/waiting_content` 领取为 `indexing`，否则等待内容生成或收敛为 stale。删除任务只有在对应用户关系已经不存在时才能领取为 `removing`。`user_file_id` 直接作为稳定 FAISS `vector_id`，避免重复消息分配重复 ID；event ID + generation fencing、重试时间、终止失败及 stale lease 恢复与内容 Worker 使用相同的可靠性规则。已有数据库继续执行 `sql/migrations/011_ai_user_index_fencing.sql`。目前尚未写入真实 FAISS 文件，下一步是用户级串行化、临时索引构建和原子替换。
+用户索引 Worker 已形成真实文件写入闭环。`USER_FILE_ADDED/REMOVED` 消息会严格校验 user、MD5、`user_file_id` 和 embedding version；添加任务只有在用户关系仍存在且全局内容向量 ready、维度恰为 1024 时才能从 `pending/waiting_content` 领取为 `indexing`，否则等待内容生成或收敛为 stale。删除任务只有在对应用户关系已经不存在时才能领取为 `removing`。`user_file_id` 直接作为稳定 FAISS `vector_id`，避免重复消息分配重复 ID；event ID + generation fencing、重试时间、终止失败及 stale lease 恢复与内容 Worker 使用相同的可靠性规则。Worker 按用户名 MD5 获取跨进程文件锁，从 MySQL 重建该用户当前完整快照，写入 `IndexIDMap2(IndexFlatIP)` 临时索引并重新加载校验，`fsync` 后以原子 rename 替换 `/data/faiss/users/{user_md5}.index.bin`；删除最后一个文件时保留合法的空索引。Compose 的 `ai` profile 会同时启动内容 Worker 和 FAISS Worker，并使用独立持久化卷。已有数据库继续执行 `sql/migrations/011_ai_user_index_fencing.sql`。
 
 ```js
 import { createUploadClient } from "./client/upload_client.mjs";

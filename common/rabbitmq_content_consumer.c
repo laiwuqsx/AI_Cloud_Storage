@@ -12,13 +12,15 @@
 #define AI_EXCHANGE "ai.events"
 #define AI_DEAD_LETTER_EXCHANGE "ai.events.dlx"
 #define AI_CONTENT_QUEUE "ai.content"
+#define AI_USER_INDEX_QUEUE "ai.user-index"
 
 static int rpc_succeeded(amqp_rpc_reply_t reply)
 {
     return reply.reply_type == AMQP_RESPONSE_NORMAL;
 }
 
-static int declare_topology(amqp_connection_state_t connection, int channel)
+static int declare_topology(amqp_connection_state_t connection, int channel,
+                            const char *queue_name, const char *routing_key)
 {
     amqp_table_entry_t dead_letter_entry;
     amqp_table_t queue_arguments;
@@ -38,12 +40,12 @@ static int declare_topology(amqp_connection_state_t connection, int channel)
         amqp_cstring_bytes(AI_DEAD_LETTER_EXCHANGE);
     queue_arguments.num_entries = 1;
     queue_arguments.entries = &dead_letter_entry;
-    amqp_queue_declare(connection, channel, amqp_cstring_bytes(AI_CONTENT_QUEUE),
+    amqp_queue_declare(connection, channel, amqp_cstring_bytes(queue_name),
                        0, 1, 0, 0, queue_arguments);
     if (!rpc_succeeded(amqp_get_rpc_reply(connection))) return -1;
-    amqp_queue_bind(connection, channel, amqp_cstring_bytes(AI_CONTENT_QUEUE),
+    amqp_queue_bind(connection, channel, amqp_cstring_bytes(queue_name),
                     amqp_cstring_bytes(AI_EXCHANGE),
-                    amqp_cstring_bytes("content.*"), amqp_empty_table);
+                    amqp_cstring_bytes(routing_key), amqp_empty_table);
     return rpc_succeeded(amqp_get_rpc_reply(connection)) ? 0 : -1;
 }
 
@@ -66,9 +68,10 @@ static int parse_event_id(amqp_bytes_t bytes, unsigned long long *event_id)
     return 0;
 }
 
-int rabbitmq_content_consumer_open(RabbitMqContentConsumer *consumer,
-                                   const char *host, int port,
-                                   const char *user, const char *password)
+static int open_consumer(RabbitMqContentConsumer *consumer,
+                         const char *host, int port,
+                         const char *user, const char *password,
+                         const char *queue_name, const char *routing_key)
 {
     amqp_connection_state_t connection;
     amqp_socket_t *socket;
@@ -85,10 +88,10 @@ int rabbitmq_content_consumer_open(RabbitMqContentConsumer *consumer,
                                   AMQP_SASL_METHOD_PLAIN, user, password))) goto fail;
     amqp_channel_open(connection, channel);
     if (!rpc_succeeded(amqp_get_rpc_reply(connection)) ||
-        declare_topology(connection, channel) != 0) goto fail;
+        declare_topology(connection, channel, queue_name, routing_key) != 0) goto fail;
     amqp_basic_qos(connection, channel, 0, 1, 0);
     if (!rpc_succeeded(amqp_get_rpc_reply(connection))) goto fail;
-    amqp_basic_consume(connection, channel, amqp_cstring_bytes(AI_CONTENT_QUEUE),
+    amqp_basic_consume(connection, channel, amqp_cstring_bytes(queue_name),
                        amqp_empty_bytes, 0, 0, 0, amqp_empty_table);
     if (!rpc_succeeded(amqp_get_rpc_reply(connection))) goto fail;
     consumer->connection = connection;
@@ -98,6 +101,22 @@ int rabbitmq_content_consumer_open(RabbitMqContentConsumer *consumer,
 fail:
     amqp_destroy_connection(connection);
     return -1;
+}
+
+int rabbitmq_content_consumer_open(RabbitMqContentConsumer *consumer,
+                                   const char *host, int port,
+                                   const char *user, const char *password)
+{
+    return open_consumer(consumer, host, port, user, password,
+                         AI_CONTENT_QUEUE, "content.*");
+}
+
+int rabbitmq_user_index_consumer_open(RabbitMqContentConsumer *consumer,
+                                      const char *host, int port,
+                                      const char *user, const char *password)
+{
+    return open_consumer(consumer, host, port, user, password,
+                         AI_USER_INDEX_QUEUE, "user.*");
 }
 
 int rabbitmq_content_consumer_receive(RabbitMqContentConsumer *consumer,

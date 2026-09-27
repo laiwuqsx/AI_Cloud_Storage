@@ -70,6 +70,7 @@ int main(int argc, char **argv)
     unsigned long long relation_id, generation_one, generation_two;
     AiUserIndexTask add_task, remove_task;
     AiUserIndexSource source;
+    AiUserIndexSnapshot snapshot;
     int recovered;
     int ok = 0;
 
@@ -129,6 +130,14 @@ int main(int argc, char **argv)
         claim_ai_user_index_task(&add_task, &source) != AI_USER_INDEX_CLAIMED ||
         source.vector_id != relation_id || source.lease_generation == 0)
         goto cleanup;
+    if (load_ai_user_index_snapshot(&add_task, source.lease_generation,
+                                    &snapshot) != 0 || snapshot.count != 1 ||
+        snapshot.vectors[0].vector_id != relation_id ||
+        snapshot.next_index_version != 1) {
+        free_ai_user_index_snapshot(&snapshot);
+        goto cleanup;
+    }
+    free_ai_user_index_snapshot(&snapshot);
     generation_one = source.lease_generation;
     if (claim_ai_user_index_task(&add_task, &source) != AI_USER_INDEX_BUSY ||
         retry_ai_user_index_task_after(&add_task, "probe retry", 3600,
@@ -170,7 +179,7 @@ int main(int argc, char **argv)
     remove_task.type = AI_INDEX_EVENT_USER_FILE_REMOVED;
     if (claim_ai_user_index_task(&remove_task, &source) != AI_USER_INDEX_CLAIMED ||
         source.vector_id != relation_id ||
-        complete_ai_user_index_remove(&remove_task,
+        complete_ai_user_index_remove(&remove_task, 2,
                                       source.lease_generation) != 0 ||
         claim_ai_user_index_task(&remove_task, &source) != AI_USER_INDEX_MISSING)
         goto cleanup;

@@ -201,6 +201,35 @@ services:
       storage:
         condition: service_healthy
 
+  faiss_index_worker:
+    profiles: ["ai"]
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/Dockerfile
+      target: fastcgi_app
+    command: ["/app/bin_cgi/faiss_index_worker"]
+    restart: on-failure
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-dev-password}
+      MYSQL_DATABASE: ai_cloud_storage
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-ai-cloud}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-local-rabbitmq-password}
+      FAISS_INDEX_DIR: /data/faiss/users
+      AI_INDEX_MAX_RETRIES: ${AI_INDEX_MAX_RETRIES:-5}
+      AI_INDEX_RETRY_SECONDS: ${AI_INDEX_RETRY_SECONDS:-10}
+      AI_INDEX_STALE_SECONDS: ${AI_INDEX_STALE_SECONDS:-300}
+    volumes:
+      - faiss_index_data:/data/faiss
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -219,3 +248,4 @@ volumes:
   fastdfs_storage_data:
   chunk_upload_data:
   rabbitmq_data:
+  faiss_index_data:

@@ -1,6 +1,8 @@
 #ifndef AI_CLOUD_AI_USER_INDEX_REPOSITORY_H
 #define AI_CLOUD_AI_USER_INDEX_REPOSITORY_H
 
+#include <stddef.h>
+
 #include "ai_content_repository.h"
 #include "ai_user_index_task.h"
 
@@ -11,6 +13,17 @@ typedef struct {
     unsigned long long lease_generation;
     unsigned int retry_count;
 } AiUserIndexSource;
+
+typedef struct {
+    float embedding[AI_CONTENT_EXPECTED_DIMENSION];
+    unsigned long long vector_id;
+} AiUserIndexVector;
+
+typedef struct {
+    AiUserIndexVector *vectors;
+    size_t count;
+    unsigned long long next_index_version;
+} AiUserIndexSnapshot;
 
 typedef enum {
     AI_USER_INDEX_CLAIM_ERROR = -1,
@@ -26,10 +39,15 @@ typedef enum {
 
 AiUserIndexClaimResult claim_ai_user_index_task(const AiUserIndexTask *task,
                                                 AiUserIndexSource *source);
+int load_ai_user_index_snapshot(const AiUserIndexTask *task,
+                                unsigned long long lease_generation,
+                                AiUserIndexSnapshot *snapshot);
+void free_ai_user_index_snapshot(AiUserIndexSnapshot *snapshot);
 int complete_ai_user_index_add(const AiUserIndexTask *task,
                                unsigned long long index_version,
                                unsigned long long lease_generation);
 int complete_ai_user_index_remove(const AiUserIndexTask *task,
+                                  unsigned long long index_version,
                                   unsigned long long lease_generation);
 int retry_ai_user_index_task_after(const AiUserIndexTask *task,
                                    const char *last_error,
